@@ -1,0 +1,79 @@
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use App\Http\Controllers\Controller;
+use App\Models\AuditLog;
+use App\Models\Role;
+use App\Models\User;
+use App\Traits\ApiResponse;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+
+class UserController extends Controller
+{
+    use ApiResponse;
+
+    public function index(Request $request): JsonResponse
+    {
+        $users = User::with(['role', 'company'])->orderBy('id', 'asc')->get();
+        return $this->successResponse($users, 'Daftar pengguna berhasil diambil.');
+    }
+
+    public function roles(): JsonResponse
+    {
+        return $this->successResponse(Role::all(), 'Daftar role berhasil diambil.');
+    }
+
+    public function store(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'role_id' => 'required|exists:roles,id',
+            'company_id' => 'nullable|exists:companies,id',
+            'name' => 'required|string|max:100',
+            'email' => 'required|email|max:100|unique:users,email',
+            'username' => 'nullable|string|max:50|unique:users,username',
+            'password' => 'required|string|min:6',
+            'phone' => 'nullable|string|max:30',
+        ]);
+
+        $validated['password'] = Hash::make($validated['password']);
+        $user = User::create($validated);
+
+        AuditLog::record('CREATE_USER', User::class, $user->id, null, [
+            'name' => $user->name,
+            'email' => $user->email,
+            'role_id' => $user->role_id,
+        ]);
+
+        return $this->successResponse($user->load(['role', 'company']), 'Pengguna berhasil ditambahkan.', 201);
+    }
+
+    public function update(Request $request, User $user): JsonResponse
+    {
+        $validated = $request->validate([
+            'role_id' => 'required|exists:roles,id',
+            'company_id' => 'nullable|exists:companies,id',
+            'name' => 'required|string|max:100',
+            'email' => 'required|email|max:100|unique:users,email,' . $user->id,
+            'username' => 'nullable|string|max:50|unique:users,username,' . $user->id,
+            'password' => 'nullable|string|min:6',
+            'phone' => 'nullable|string|max:30',
+            'is_active' => 'nullable|boolean',
+        ]);
+
+        if (!empty($validated['password'])) {
+            $validated['password'] = Hash::make($validated['password']);
+        } else {
+            unset($validated['password']);
+        }
+
+        $old = $user->toArray();
+        $user->update($validated);
+
+        AuditLog::record('UPDATE_USER', User::class, $user->id, $old, $user->toArray());
+
+        return $this->successResponse($user->fresh(['role', 'company']), 'Data pengguna berhasil diperbarui.');
+    }
+}
