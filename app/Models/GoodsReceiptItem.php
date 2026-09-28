@@ -12,6 +12,8 @@ class GoodsReceiptItem extends Model
         'item_id',
         'warehouse_location_id',
         'qty',
+        'unit_price',
+        'total_price',
         'condition',
         'notes',
     ];
@@ -20,6 +22,8 @@ class GoodsReceiptItem extends Model
     {
         return [
             'qty' => 'decimal:2',
+            'unit_price' => 'decimal:2',
+            'total_price' => 'decimal:2',
         ];
     }
 

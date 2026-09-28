@@ -19,8 +19,7 @@ class StockController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Item::with(['company', 'unit', 'category', 'stockBalances.location.warehouse'])
-            ->orderByRaw("SUBSTRING(COALESCE(item_code, ''), 1, 3) ASC, LENGTH(COALESCE(item_code, '')) ASC, item_code ASC, id ASC");
+        $query = Item::with(['company', 'unit', 'category', 'stockBalances.location.warehouse']);
 
         if ($request->filled('company_id')) {
             $query->where('company_id', $request->company_id);
@@ -41,12 +40,10 @@ class StockController extends Controller
         }
 
         if ($request->filled('search')) {
-            $search = trim($request->search);
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'LIKE', "%{$search}%")
-                  ->orWhere('item_code', 'LIKE', "%{$search}%")
-                  ->orWhere('specification', 'LIKE', "%{$search}%");
-            });
+            $query->fuzzySearch($request->search);
+            $query->orderBy('item_code', 'ASC')->orderBy('id', 'ASC');
+        } else {
+            $query->orderByRaw("SUBSTRING(COALESCE(item_code, ''), 1, 3) ASC, LENGTH(COALESCE(item_code, '')) ASC, item_code ASC, id ASC");
         }
 
         $mapItemToBalance = function ($item) {

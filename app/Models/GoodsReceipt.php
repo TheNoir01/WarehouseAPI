@@ -18,6 +18,7 @@ class GoodsReceipt extends Model
         'supplier_name',
         'warehouse_id',
         'delivery_order_number',
+        'po_number',
         'received_date',
         'received_by',
         'status',

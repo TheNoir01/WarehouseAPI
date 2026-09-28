@@ -15,6 +15,7 @@ class InventoryBatch extends Model
         'warehouse_location_id',
         'qty_initial',
         'qty_remaining',
+        'unit_price',
         'received_at',
         'source_type',
         'source_id',
@@ -26,6 +27,7 @@ class InventoryBatch extends Model
         return [
             'qty_initial' => 'decimal:2',
             'qty_remaining' => 'decimal:2',
+            'unit_price' => 'decimal:2',
             'received_at' => 'datetime',
         ];
     }

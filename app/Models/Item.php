@@ -24,6 +24,8 @@ class Item extends Model
         'is_remnant',
         'parent_item_id',
         'specification',
+        'po_number',
+        'purchase_price',
         'description',
     ];
 
@@ -37,6 +39,7 @@ class Item extends Model
     {
         return [
             'minimum_stock' => 'decimal:2',
+            'purchase_price' => 'decimal:2',
             'is_remnant' => 'boolean',
         ];
     }
@@ -91,6 +94,11 @@ class Item extends Model
         return $this->hasMany(MaterialRemnant::class, 'parent_item_id');
     }
 
+    public function priceHistories(): HasMany
+    {
+        return $this->hasMany(ItemPriceHistory::class)->orderByDesc('created_at');
+    }
+
     public function getTotalStockAttribute(): float
     {
         if ($this->relationLoaded('stockBalances')) {
@@ -135,5 +143,89 @@ class Item extends Model
     {
         $list = $this->suppliers_list;
         return !empty($list) ? implode(', ', $list) : '-';
+    }
+
+    /**
+     * Scope for blazing fast, multi-keyword and typo-tolerant search across all inventory items.
+     */
+    public function scopeFuzzySearch($query, string $search)
+    {
+        $search = trim($search);
+        if ($search === '') {
+            return $query;
+        }
+
+        $knownCorrections = [
+            'glavanis' => 'galvanis',
+            'glvanis' => 'galvanis',
+            'galfanis' => 'galvanis',
+            'grinda' => 'gerinda',
+            'gerrenda' => 'gerinda',
+            'fiting' => 'fitting',
+            'kones' => 'cones',
+            'spandeck' => 'spandek',
+            'dopp' => 'dop',
+            'nepel' => 'napel',
+            'naple' => 'napel',
+            'isolasi' => 'solasi',
+            'solder' => 'tinol',
+            'v-lock' => 'vlok',
+            'vlock' => 'vlok',
+            'reduser' => 'reducer',
+            'las' => 'welding',
+        ];
+
+        $tokens = preg_split('/\s+/', strtolower($search));
+
+        return $query->where(function ($masterQ) use ($tokens, $knownCorrections) {
+            foreach ($tokens as $token) {
+                $token = trim($token);
+                if ($token === '') continue;
+
+                $variants = [$token];
+
+                // Convert dot to comma and comma to dot (e.g. 0.8 <-> 0,8)
+                if (strpos($token, '.') !== false) {
+                    $variants[] = str_replace('.', ',', $token);
+                } elseif (strpos($token, ',') !== false) {
+                    $variants[] = str_replace(',', '.', $token);
+                }
+
+                if (isset($knownCorrections[$token])) {
+                    $variants[] = $knownCorrections[$token];
+                }
+                foreach ($knownCorrections as $typo => $correct) {
+                    if ($token === $correct && !in_array($typo, $variants, true)) {
+                        $variants[] = $typo;
+                    }
+                }
+
+                if (count($variants) === 1 && strlen($token) >= 4) {
+                    $targetWords = [
+                        'galvanis', 'gerinda', 'fitting', 'cutting', 'wheel', 'baut',
+                        'socket', 'flange', 'elbow', 'nipple', 'napel', 'gasket',
+                        'spandek', 'bearing', 'kabel', 'pipa', 'plat', 'grating', 'conduit'
+                    ];
+                    foreach ($targetWords as $tw) {
+                        if (levenshtein($token, $tw) <= 2) {
+                            $variants[] = $tw;
+                        }
+                    }
+                }
+
+                $variants = array_values(array_unique($variants));
+
+                $masterQ->where(function ($tokenQ) use ($variants) {
+                    foreach ($variants as $v) {
+                        $tokenQ->orWhere('name', 'LIKE', "%{$v}%")
+                               ->orWhere('item_code', 'LIKE', "%{$v}%")
+                               ->orWhere('po_number', 'LIKE', "%{$v}%")
+                               ->orWhere('specification', 'LIKE', "%{$v}%")
+                               ->orWhere('barcode', 'LIKE', "%{$v}%")
+                               ->orWhere('qr_code', 'LIKE', "%{$v}%");
+                    }
+                });
+            }
+        });
     }
 }

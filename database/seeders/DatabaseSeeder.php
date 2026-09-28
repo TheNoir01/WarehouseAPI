@@ -50,6 +50,12 @@ class DatabaseSeeder extends Seeder
             'description' => 'Operator mobile untuk scan, cek stok, barang keluar, dan pengembalian',
         ]);
 
+        $purchasingRole = Role::create([
+            'name' => 'purchasing',
+            'label' => 'Purchasing',
+            'description' => 'Mengelola nomor PO dan harga barang masuk',
+        ]);
+
         // 2. COMPANIES (2 PT dalam 1 gudang)
         $ptA = Company::create([
             'code' => 'KJG',
