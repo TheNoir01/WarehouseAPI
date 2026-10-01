@@ -33,6 +33,7 @@ class Item extends Model
         'total_stock',
         'stock_status',
         'suppliers_summary',
+        'category_minimum_stock',
     ];
 
     protected function casts(): array
@@ -89,6 +90,11 @@ class Item extends Model
         return $this->hasMany(StockMovement::class);
     }
 
+    public function goodsReceiptItems(): HasMany
+    {
+        return $this->hasMany(GoodsReceiptItem::class);
+    }
+
     public function materialRemnants(): HasMany
     {
         return $this->hasMany(MaterialRemnant::class, 'parent_item_id');
@@ -107,10 +113,25 @@ class Item extends Model
         return (float) ($this->stockBalances()->sum('qty') ?? 0);
     }
 
+    public function getCategoryMinimumStockAttribute(): float
+    {
+        if ($this->relationLoaded('category') && $this->category) {
+            return (float) ($this->category->minimum_stock ?? 0);
+        }
+        if ($this->category_id) {
+            return (float) ($this->category()->value('minimum_stock') ?? 0);
+        }
+        return (float) ($this->minimum_stock ?? 0);
+    }
+
     public function getStockStatusAttribute(): string
     {
-        $stock = $this->total_stock;
-        $min = (float) $this->minimum_stock;
+        $stock = (float) $this->total_stock;
+        // Priority to category minimum stock as requested by user
+        $min = (float) $this->category_minimum_stock;
+        if ($min <= 0 && (float) $this->minimum_stock > 0) {
+            $min = (float) $this->minimum_stock;
+        }
 
         if ($stock <= 0) {
             return 'HABIS';
@@ -124,9 +145,13 @@ class Item extends Model
     public function getSuppliersListAttribute(): array
     {
         $suppliers = [];
-        $desc = (string) ($this->description ?? '');
-        if (!empty($desc)) {
-            if (preg_match('/Supplier\s*:\s*([^|\n]+)/i', $desc, $matches)) {
+        $sources = [
+            (string) ($this->description ?? ''),
+            (string) ($this->specification ?? ''),
+        ];
+
+        foreach ($sources as $source) {
+            if (!empty($source) && preg_match('/Supplier\s*:\s*([^|\n]+)/i', $source, $matches)) {
                 $rawParts = explode(',', $matches[1]);
                 foreach ($rawParts as $p) {
                     $clean = trim($p);

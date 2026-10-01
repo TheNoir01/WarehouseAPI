@@ -48,7 +48,6 @@ class GoodsReceiptService
 
             $receipt = GoodsReceipt::create([
                 'receipt_number' => $receiptNumber,
-                'po_number' => $data['po_number'] ?? null,
                 'company_id' => $data['company_id'],
                 'supplier_id' => $data['supplier_id'] ?? null,
                 'supplier_name' => $data['supplier_name'] ?? null,
@@ -82,9 +81,6 @@ class GoodsReceiptService
                     throw new InvalidArgumentException("Qty barang harus lebih dari 0.");
                 }
 
-                $unitPrice = isset($itemRow['unit_price']) ? max(0, (float) $itemRow['unit_price']) : 0.0;
-                $totalPrice = isset($itemRow['total_price']) ? (float) $itemRow['total_price'] : round($unitPrice * $qty, 2);
-
                 $locationId = !empty($itemRow['warehouse_location_id']) ? $itemRow['warehouse_location_id'] : (\App\Models\WarehouseLocation::first()?->id ?? 1);
 
                 $receiptItem = GoodsReceiptItem::create([
@@ -92,8 +88,6 @@ class GoodsReceiptService
                     'item_id' => $itemId,
                     'warehouse_location_id' => $locationId,
                     'qty' => $qty,
-                    'unit_price' => $unitPrice,
-                    'total_price' => $totalPrice,
                     'condition' => $itemRow['condition'] ?? 'good',
                     'notes' => $itemRow['notes'] ?? null,
                 ]);
@@ -107,7 +101,6 @@ class GoodsReceiptService
                     'warehouse_location_id' => $locationId,
                     'qty_initial' => $qty,
                     'qty_remaining' => $qty,
-                    'unit_price' => $unitPrice,
                     'received_at' => $receipt->received_date ? \Carbon\Carbon::parse($receipt->received_date) : now(),
                     'source_type' => GoodsReceipt::class,
                     'source_id' => $receipt->id,
@@ -161,67 +154,6 @@ class GoodsReceiptService
     }
 
     /**
-     * Update PO number and item pricing (unit_price & total_price) for an existing GoodsReceipt.
-     * Note: received_date and inventory_batches.received_at are strictly immutable to preserve FIFO order!
-     */
-    public function updatePurchasingInfo(GoodsReceipt $receipt, array $data, ?int $userId = null): GoodsReceipt
-    {
-        $userId = $userId ?? auth('sanctum')->id() ?? auth()->id() ?? 1;
-
-        return DB::transaction(function () use ($receipt, $data, $userId) {
-            $oldPo = $receipt->po_number;
-            $newPo = isset($data['po_number']) ? trim($data['po_number']) : $receipt->po_number;
-
-            $receipt->update([
-                'po_number' => $newPo,
-            ]);
-
-            // Update items pricing if provided
-            if (!empty($data['items']) && is_array($data['items'])) {
-                foreach ($data['items'] as $itemData) {
-                    $receiptItem = null;
-                    if (!empty($itemData['id'])) {
-                        $receiptItem = GoodsReceiptItem::where('goods_receipt_id', $receipt->id)
-                            ->where('id', $itemData['id'])
-                            ->first();
-                    } elseif (!empty($itemData['item_id'])) {
-                        $receiptItem = GoodsReceiptItem::where('goods_receipt_id', $receipt->id)
-                            ->where('item_id', $itemData['item_id'])
-                            ->first();
-                    }
-
-                    if ($receiptItem) {
-                        $unitPrice = isset($itemData['unit_price']) ? max(0, (float) $itemData['unit_price']) : (float) $receiptItem->unit_price;
-                        $totalPrice = isset($itemData['total_price']) ? (float) $itemData['total_price'] : round($unitPrice * (float) $receiptItem->qty, 2);
-
-                        $receiptItem->update([
-                            'unit_price' => $unitPrice,
-                            'total_price' => $totalPrice,
-                        ]);
-
-                        // Update unit_price on corresponding inventory batches, preserving received_at!
-                        \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)
-                            ->where('source_id', $receipt->id)
-                            ->where('item_id', $receiptItem->item_id)
-                            ->update([
-                                'unit_price' => $unitPrice,
-                            ]);
-                    }
-                }
-            }
-
-            AuditLog::record('PURCHASING_UPDATE', GoodsReceipt::class, $receipt->id, [
-                'po_number' => $oldPo,
-            ], [
-                'po_number' => $newPo,
-                'updated_by' => $userId,
-            ], $userId);
-
-            return $receipt->fresh()->load(['items.item', 'items.location', 'company', 'supplier', 'warehouse', 'receivedBy', 'attachments']);
-        });
-    }
-
-    /**
      * Merge or record supplier name into the item's description without duplication.
      */
     protected function recordSupplierToItem(Item $item, string $supplierName): void
@@ -259,309 +191,106 @@ class GoodsReceiptService
     }
 
     /**
-     * Correct an existing GoodsReceipt (e.g. wrong Qty, wrong Item selected, wrong Location).
-     * Strictly preserves original received_at so FIFO order remains intact.
+     * Update PO number and item pricing (unit_price & total_price) for an existing GoodsReceipt.
+     * Note: received_date and inventory_batches.received_at are strictly immutable to preserve FIFO order!
      */
-    public function correctReceipt(GoodsReceipt $receipt, array $data, array $itemsData, ?int $userId = null): GoodsReceipt
+    public function updatePurchasingInfo(GoodsReceipt $receipt, array $data, ?int $userId = null): GoodsReceipt
     {
         $userId = $userId ?? auth('sanctum')->id() ?? auth()->id() ?? 1;
 
-        return DB::transaction(function () use ($receipt, $data, $itemsData, $userId) {
-            $companyId = $receipt->company_id;
-            $oldReceiptData = $receipt->load('items')->toArray();
+        return DB::transaction(function () use ($receipt, $data, $userId) {
+            $oldPo = $receipt->po_number;
+            $newPo = isset($data['po_number']) ? trim($data['po_number']) : $receipt->po_number;
 
-            // 1. Update header fields
-            $updateHeader = [];
-            if (array_key_exists('delivery_order_number', $data)) {
-                $updateHeader['delivery_order_number'] = trim((string) $data['delivery_order_number']) ?: null;
-            }
-            if (array_key_exists('supplier_id', $data)) {
-                $updateHeader['supplier_id'] = $data['supplier_id'] ?: null;
-            }
-            if (array_key_exists('supplier_name', $data)) {
-                $updateHeader['supplier_name'] = trim((string) $data['supplier_name']) ?: null;
-            }
-            if (array_key_exists('notes', $data)) {
-                $updateHeader['notes'] = trim((string) $data['notes']) ?: null;
-            }
-            if (!empty($updateHeader)) {
-                $receipt->update($updateHeader);
-            }
+            $receipt->update([
+                'po_number' => $newPo,
+            ]);
 
-            // 2. Process Items corrections
-            $existingItems = $receipt->items()->get()->keyBy('id');
-            $processedItemIds = [];
+            $priceChangesOld = [];
+            $priceChangesNew = [];
 
-            foreach ($itemsData as $idx => $row) {
-                $receiptItemId = !empty($row['id']) ? (int) $row['id'] : null;
-                $newItemId = (int) ($row['item_id'] ?? 0);
-                $newQty = (float) ($row['qty'] ?? 0);
-                $newLocationId = !empty($row['warehouse_location_id']) ? (int) $row['warehouse_location_id'] : ($receipt->warehouse_id ?? 1);
-                $condition = $row['condition'] ?? 'good';
-                $notes = $row['notes'] ?? null;
-
-                if ($newItemId <= 0) {
-                    throw new InvalidArgumentException("Item barang wajib dipilih.");
-                }
-                if ($newQty <= 0) {
-                    throw new InvalidArgumentException("Jumlah (Qty) barang harus lebih dari 0.");
-                }
-
-                $itemModel = Item::findOrFail($newItemId);
-                if ($itemModel->company_id !== $companyId) {
-                    throw new InvalidArgumentException("Barang '{$itemModel->name}' bukan milik PT yang sesuai.");
-                }
-
-                if ($receiptItemId && isset($existingItems[$receiptItemId])) {
-                    $existingItem = $existingItems[$receiptItemId];
-                    $processedItemIds[] = $receiptItemId;
-
-                    $oldItemId = (int) $existingItem->item_id;
-                    $oldLocationId = (int) $existingItem->warehouse_location_id;
-                    $oldQty = (float) $existingItem->qty;
-                    $unitPrice = (float) $existingItem->unit_price;
-
-                    // Find corresponding batch
-                    $batch = \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)
-                        ->where('source_id', $receipt->id)
-                        ->where('item_id', $oldItemId)
-                        ->lockForUpdate()
-                        ->first();
-
-                    $qtyUsed = 0.0;
-                    if ($batch) {
-                        $qtyUsed = max(0, (float) $batch->qty_initial - (float) $batch->qty_remaining);
+            // Update items pricing if provided
+            if (!empty($data['items']) && is_array($data['items'])) {
+                foreach ($data['items'] as $itemData) {
+                    $receiptItem = null;
+                    if (!empty($itemData['id'])) {
+                        $receiptItem = GoodsReceiptItem::with('item')->where('goods_receipt_id', $receipt->id)
+                            ->where('id', $itemData['id'])
+                            ->first();
+                    } elseif (!empty($itemData['item_id'])) {
+                        $receiptItem = GoodsReceiptItem::with('item')->where('goods_receipt_id', $receipt->id)
+                            ->where('item_id', $itemData['item_id'])
+                            ->first();
                     }
 
-                    // If item changed
-                    if ($oldItemId !== $newItemId) {
-                        if ($qtyUsed > 0) {
-                            throw new \RuntimeException(
-                                "Barang '{$existingItem->item?->name}' sudah terpakai sebanyak " . number_format($qtyUsed, 2, ',', '.') . " di transaksi barang keluar. Tidak dapat mengganti jenis barang ini."
-                            );
+                    if ($receiptItem) {
+                        $oldUnitPrice = (float) $receiptItem->unit_price;
+                        $oldTotalPrice = (float) $receiptItem->total_price;
+                        $unitPrice = isset($itemData['unit_price']) ? max(0, (float) $itemData['unit_price']) : (float) $receiptItem->unit_price;
+                        $totalPrice = isset($itemData['total_price']) ? (float) $itemData['total_price'] : round($unitPrice * (float) $receiptItem->qty, 2);
+
+                        if (abs($oldUnitPrice - $unitPrice) > 0.001 || abs($oldTotalPrice - $totalPrice) > 0.001) {
+                            $itemName = $receiptItem->item?->name ?? "Item #{$receiptItem->item_id}";
+                            $itemCode = $receiptItem->item?->item_code ?? '';
+                            $priceChangesOld[] = [
+                                'item_id' => $receiptItem->item_id,
+                                'item_code' => $itemCode,
+                                'item_name' => $itemName,
+                                'unit_price' => $oldUnitPrice,
+                                'total_price' => $oldTotalPrice,
+                            ];
+                            $priceChangesNew[] = [
+                                'item_id' => $receiptItem->item_id,
+                                'item_code' => $itemCode,
+                                'item_name' => $itemName,
+                                'unit_price' => $unitPrice,
+                                'total_price' => $totalPrice,
+                            ];
+
+                            // Also record into ItemPriceHistory for persistent tracking
+                            \App\Models\ItemPriceHistory::create([
+                                'item_id' => $receiptItem->item_id,
+                                'user_id' => $userId,
+                                'old_price' => $oldUnitPrice,
+                                'new_price' => $unitPrice,
+                                'notes' => "Update Dokumen Penerimaan {$receipt->receipt_number}" . ($newPo ? " (No. PO: {$newPo})" : ''),
+                            ]);
                         }
 
-                        // Revert old item stock and delete old batch
-                        $this->stockService->moveStock(
-                            companyId: $companyId,
-                            itemId: $oldItemId,
-                            locationId: $oldLocationId,
-                            type: 'ADJUSTMENT',
-                            refType: GoodsReceipt::class,
-                            refId: $receipt->id,
-                            refNumber: $receipt->receipt_number,
-                            qty: -$oldQty,
-                            notes: "Koreksi Dokumen {$receipt->receipt_number}: Penggantian barang salah input",
-                            userId: $userId
-                        );
-                        if ($batch) {
-                            $batch->delete();
-                        }
-
-                        // Add new item stock and create new batch with ORIGINAL received_at to preserve FIFO
-                        $originalReceivedAt = $batch?->received_at ?? ($receipt->received_date ? \Carbon\Carbon::parse($receipt->received_date) : now());
-                        $batchNumber = sprintf('BATCH-GR-%06d-%03d', $receipt->id, $idx + 1);
-                        \App\Models\InventoryBatch::create([
-                            'batch_number' => $batchNumber,
-                            'item_id' => $newItemId,
-                            'company_id' => $companyId,
-                            'warehouse_location_id' => $newLocationId,
-                            'qty_initial' => $newQty,
-                            'qty_remaining' => $newQty,
+                        $receiptItem->update([
                             'unit_price' => $unitPrice,
-                            'received_at' => $originalReceivedAt, // PRESERVE FIFO!
-                            'source_type' => GoodsReceipt::class,
-                            'source_id' => $receipt->id,
-                            'notes' => "Penerimaan No: {$receipt->receipt_number} (Koreksi Barang)",
+                            'total_price' => $totalPrice,
                         ]);
 
-                        $this->stockService->moveStock(
-                            companyId: $companyId,
-                            itemId: $newItemId,
-                            locationId: $newLocationId,
-                            type: 'ADJUSTMENT',
-                            refType: GoodsReceipt::class,
-                            refId: $receipt->id,
-                            refNumber: $receipt->receipt_number,
-                            qty: $newQty,
-                            notes: "Koreksi Dokumen {$receipt->receipt_number}: Barang pengganti yang benar",
-                            userId: $userId
-                        );
-
-                        $existingItem->update([
-                            'item_id' => $newItemId,
-                            'warehouse_location_id' => $newLocationId,
-                            'qty' => $newQty,
-                            'total_price' => round($unitPrice * $newQty, 2),
-                            'condition' => $condition,
-                            'notes' => $notes,
-                        ]);
-                    } else {
-                        // Same item, adjust qty or location
-                        if ($newQty < $qtyUsed) {
-                            throw new \RuntimeException(
-                                "Qty baru (" . number_format($newQty, 2, ',', '.') . ") tidak boleh kurang dari jumlah yang sudah terpakai di transaksi barang keluar (" . number_format($qtyUsed, 2, ',', '.') . ")."
-                            );
-                        }
-
-                        $qtyDiff = $newQty - $oldQty;
-
-                        if ($oldLocationId !== $newLocationId) {
-                            $this->stockService->moveStock(
-                                companyId: $companyId,
-                                itemId: $oldItemId,
-                                locationId: $oldLocationId,
-                                type: 'ADJUSTMENT',
-                                refType: GoodsReceipt::class,
-                                refId: $receipt->id,
-                                refNumber: $receipt->receipt_number,
-                                qty: -$oldQty,
-                                notes: "Koreksi Dokumen {$receipt->receipt_number}: Pindah lokasi rak",
-                                userId: $userId
-                            );
-                            $this->stockService->moveStock(
-                                companyId: $companyId,
-                                itemId: $oldItemId,
-                                locationId: $newLocationId,
-                                type: 'ADJUSTMENT',
-                                refType: GoodsReceipt::class,
-                                refId: $receipt->id,
-                                refNumber: $receipt->receipt_number,
-                                qty: $newQty,
-                                notes: "Koreksi Dokumen {$receipt->receipt_number}: Lokasi rak baru",
-                                userId: $userId
-                            );
-
-                            if ($batch) {
-                                $batch->update([
-                                    'warehouse_location_id' => $newLocationId,
-                                    'qty_initial' => $newQty,
-                                    'qty_remaining' => (float) $batch->qty_remaining + $qtyDiff,
-                                ]);
-                            }
-                        } else {
-                            if (abs($qtyDiff) > 0.0001) {
-                                $this->stockService->moveStock(
-                                    companyId: $companyId,
-                                    itemId: $oldItemId,
-                                    locationId: $oldLocationId,
-                                    type: 'ADJUSTMENT',
-                                    refType: GoodsReceipt::class,
-                                    refId: $receipt->id,
-                                    refNumber: $receipt->receipt_number,
-                                    qty: $qtyDiff,
-                                    notes: "Koreksi Dokumen {$receipt->receipt_number}: Qty disesuaikan dari " . number_format($oldQty, 2, ',', '.') . " ke " . number_format($newQty, 2, ',', '.'),
-                                    userId: $userId
-                                );
-
-                                if ($batch) {
-                                    $batch->update([
-                                        'qty_initial' => $newQty,
-                                        'qty_remaining' => (float) $batch->qty_remaining + $qtyDiff,
-                                    ]);
-                                }
-                            }
-                        }
-
-                        $existingItem->update([
-                            'warehouse_location_id' => $newLocationId,
-                            'qty' => $newQty,
-                            'total_price' => round($unitPrice * $newQty, 2),
-                            'condition' => $condition,
-                            'notes' => $notes,
-                        ]);
+                        // Update unit_price on corresponding inventory batches, preserving received_at!
+                        \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)
+                            ->where('source_id', $receipt->id)
+                            ->where('item_id', $receiptItem->item_id)
+                            ->update([
+                                'unit_price' => $unitPrice,
+                            ]);
                     }
-                } else {
-                    // Added a new item row
-                    $unitPrice = isset($row['unit_price']) ? max(0, (float) $row['unit_price']) : (float) ($itemModel->purchase_price ?? 0);
-                    $totalPrice = round($unitPrice * $newQty, 2);
-
-                    GoodsReceiptItem::create([
-                        'goods_receipt_id' => $receipt->id,
-                        'item_id' => $newItemId,
-                        'warehouse_location_id' => $newLocationId,
-                        'qty' => $newQty,
-                        'unit_price' => $unitPrice,
-                        'total_price' => $totalPrice,
-                        'condition' => $condition,
-                        'notes' => $notes,
-                    ]);
-
-                    $originalReceivedAt = $receipt->received_date ? \Carbon\Carbon::parse($receipt->received_date) : now();
-                    $batchNumber = sprintf('BATCH-GR-%06d-%03d', $receipt->id, $idx + 1);
-                    \App\Models\InventoryBatch::create([
-                        'batch_number' => $batchNumber,
-                        'item_id' => $newItemId,
-                        'company_id' => $companyId,
-                        'warehouse_location_id' => $newLocationId,
-                        'qty_initial' => $newQty,
-                        'qty_remaining' => $newQty,
-                        'unit_price' => $unitPrice,
-                        'received_at' => $originalReceivedAt, // PRESERVE FIFO!
-                        'source_type' => GoodsReceipt::class,
-                        'source_id' => $receipt->id,
-                        'notes' => "Penerimaan No: {$receipt->receipt_number} (Item Tambahan)",
-                    ]);
-
-                    $this->stockService->moveStock(
-                        companyId: $companyId,
-                        itemId: $newItemId,
-                        locationId: $newLocationId,
-                        type: 'ADJUSTMENT',
-                        refType: GoodsReceipt::class,
-                        refId: $receipt->id,
-                        refNumber: $receipt->receipt_number,
-                        qty: $newQty,
-                        notes: "Koreksi Dokumen {$receipt->receipt_number}: Penambahan item baru",
-                        userId: $userId
-                    );
                 }
             }
 
-            // Remove any items that were removed
-            foreach ($existingItems as $existingId => $existingItem) {
-                if (!in_array($existingId, $processedItemIds)) {
-                    $batch = \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)
-                        ->where('source_id', $receipt->id)
-                        ->where('item_id', $existingItem->item_id)
-                        ->lockForUpdate()
-                        ->first();
-
-                    $qtyUsed = 0.0;
-                    if ($batch) {
-                        $qtyUsed = max(0, (float) $batch->qty_initial - (float) $batch->qty_remaining);
-                    }
-
-                    if ($qtyUsed > 0) {
-                        throw new \RuntimeException(
-                            "Item '{$existingItem->item?->name}' tidak dapat dihapus karena sudah ada " . number_format($qtyUsed, 2, ',', '.') . " yang keluar ke produksi."
-                        );
-                    }
-
-                    $this->stockService->moveStock(
-                        companyId: $companyId,
-                        itemId: $existingItem->item_id,
-                        locationId: $existingItem->warehouse_location_id,
-                        type: 'ADJUSTMENT',
-                        refType: GoodsReceipt::class,
-                        refId: $receipt->id,
-                        refNumber: $receipt->receipt_number,
-                        qty: -(float) $existingItem->qty,
-                        notes: "Koreksi Dokumen {$receipt->receipt_number}: Hapus item salah input",
-                        userId: $userId
-                    );
-
-                    if ($batch) {
-                        $batch->delete();
-                    }
-
-                    $existingItem->delete();
+            // Also sync po_number to items in this receipt if po_number is set
+            if (!empty($newPo)) {
+                $receiptItemIds = $receipt->items()->pluck('item_id')->filter()->unique()->toArray();
+                if (!empty($receiptItemIds)) {
+                    \App\Models\Item::whereIn('id', $receiptItemIds)->update(['po_number' => $newPo]);
                 }
             }
 
-            AuditLog::record('GOODS_RECEIPT_CORRECTION', GoodsReceipt::class, $receipt->id, $oldReceiptData, $receipt->fresh('items')->toArray(), $userId);
+            AuditLog::record('PURCHASING_UPDATE', GoodsReceipt::class, $receipt->id, [
+                'po_number' => $oldPo,
+                'items' => $priceChangesOld,
+            ], [
+                'po_number' => $newPo,
+                'items' => $priceChangesNew,
+                'updated_by' => $userId,
+            ], $userId);
 
-            return $receipt->fresh(['items.item', 'items.location', 'company', 'supplier', 'warehouse', 'receivedBy', 'attachments']);
+            return $receipt->fresh()->load(['items.item', 'items.location', 'company', 'supplier', 'warehouse', 'receivedBy', 'attachments']);
         });
     }
 }

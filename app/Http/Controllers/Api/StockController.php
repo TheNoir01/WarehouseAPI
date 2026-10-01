@@ -19,7 +19,13 @@ class StockController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $query = Item::with(['company', 'unit', 'category', 'stockBalances.location.warehouse']);
+        $query = Item::with([
+            'company',
+            'unit',
+            'category',
+            'stockBalances.location.warehouse',
+            'goodsReceiptItems.goodsReceipt:id,receipt_number,received_date,supplier_name,po_number,status',
+        ]);
 
         if ($request->filled('company_id')) {
             $query->where('company_id', $request->company_id);
@@ -51,6 +57,25 @@ class StockController extends Controller
             $totalStock = (float) $item->total_stock;
             $lastUpdated = $item->stockBalances->max('updated_at') ?? $item->updated_at;
 
+            $receipts = [];
+            if ($item->relationLoaded('goodsReceiptItems')) {
+                foreach ($item->goodsReceiptItems as $gri) {
+                    $gr = $gri->goodsReceipt;
+                    if ($gr) {
+                        $rawDate = $gr->received_date ? (is_string($gr->received_date) ? substr($gr->received_date, 0, 10) : $gr->received_date->format('Y-m-d')) : null;
+                        $receipts[] = [
+                            'id' => $gri->id,
+                            'receipt_number' => $gr->receipt_number,
+                            'received_date' => $rawDate,
+                            'qty' => (float) $gri->qty,
+                            'supplier_name' => $gr->supplier_name,
+                            'po_number' => $gr->po_number,
+                            'notes' => $gri->notes,
+                        ];
+                    }
+                }
+            }
+
             return [
                 'id' => $firstBalance?->id ?? $item->id,
                 'item_id' => $item->id,
@@ -63,6 +88,7 @@ class StockController extends Controller
                 'created_at' => $item->created_at ? $item->created_at->toISOString() : null,
                 'company' => $item->company,
                 'item' => $item,
+                'goods_receipts' => $receipts,
                 'location' => $firstBalance?->location ?? [
                     'id' => 1,
                     'code' => '-',
@@ -213,7 +239,7 @@ class StockController extends Controller
                 'unit_name' => $item->unit?->name,
                 'total_stock' => $item->total_stock,
                 'stock_status' => $item->stock_status,
-                'minimum_stock' => (float) $item->minimum_stock,
+                'minimum_stock' => (float) ($item->category_minimum_stock ?: $item->minimum_stock),
                 'locations' => $item->stockBalances->map(function ($b) {
                     return [
                         'location_id' => $b->warehouse_location_id,

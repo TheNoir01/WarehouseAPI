@@ -167,20 +167,25 @@ class ItemController extends Controller
         $roleName = is_string($user?->role) ? $user->role : ($user?->role?->name ?? '');
 
         if ($roleName !== 'purchasing') {
-            return $this->errorResponse('Akses ditolak: Hanya role Purchasing yang berhak menginput atau mengubah harga barang.', 403);
+            return $this->errorResponse('Akses ditolak: Hanya role Purchasing yang berhak menginput atau mengubah harga barang dan No PO.', 403);
         }
 
         $request->validate([
-            'purchase_price' => 'required|numeric|min:0',
+            'purchase_price' => 'nullable|numeric|min:0',
+            'po_number' => 'nullable|string|max:100',
             'notes' => 'nullable|string|max:255',
         ]);
 
         $oldPrice = (float) ($item->purchase_price ?? 0);
-        $newPrice = max(0, (float) $request->input('purchase_price', 0));
+        $newPrice = $request->has('purchase_price') ? max(0, (float) $request->input('purchase_price', 0)) : $oldPrice;
+        $oldPo = $item->po_number;
+        $newPo = $request->has('po_number') ? trim((string) $request->input('po_number', '')) : $oldPo;
         $notes = trim($request->input('notes', ''));
 
+        // Update item price & po_number (Note: FIFO queue, batch dates, and received_date are strictly untouched)
         $item->update([
             'purchase_price' => $newPrice,
+            'po_number' => $newPo ?: null,
         ]);
 
         // Sync unit_price on existing inventory batches for this item if price specified
@@ -191,22 +196,25 @@ class ItemController extends Controller
         }
 
         // Record history log in item_price_histories
+        $historyNote = $notes ?: ($newPo !== $oldPo ? "Update PO: {$newPo}" : 'Pembaruan data oleh Purchasing');
         \App\Models\ItemPriceHistory::create([
             'item_id' => $item->id,
             'user_id' => $request->user()?->id,
             'old_price' => $oldPrice,
             'new_price' => $newPrice,
-            'notes' => $notes ?: 'Pembaruan harga oleh Purchasing',
+            'notes' => $historyNote,
         ]);
 
-        AuditLog::record('ITEM_PRICE_UPDATE', Item::class, $item->id, [
+        AuditLog::record('ITEM_PURCHASING_UPDATE', Item::class, $item->id, [
             'purchase_price' => $oldPrice,
+            'po_number' => $oldPo,
         ], [
             'purchase_price' => $newPrice,
+            'po_number' => $newPo,
             'notes' => $notes,
         ], $request->user()?->id);
 
-        return $this->successResponse($item->fresh(['company', 'category', 'type', 'unit', 'priceHistories.user']), 'Harga barang berhasil diperbarui.');
+        return $this->successResponse($item->fresh(['company', 'category', 'type', 'unit', 'priceHistories.user']), 'Data purchasing barang (Harga & No. PO) berhasil diperbarui tanpa menggeser antrean FIFO.');
     }
 
     public function priceHistories(Request $request): JsonResponse

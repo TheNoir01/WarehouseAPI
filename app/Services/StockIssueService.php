@@ -18,11 +18,20 @@ class StockIssueService
     public function generateIssueNumber(): string
     {
         $year = date('Y');
-        $last = StockIssue::whereYear('created_at', $year)->orderByDesc('id')->first();
+        $last = StockIssue::withTrashed()
+            ->where('issue_number', 'LIKE', "OUT-{$year}-%")
+            ->orderByDesc('id')
+            ->first();
+
         $next = 1;
         if ($last && preg_match('/OUT-\d+-(\d+)$/', $last->issue_number, $matches)) {
             $next = ((int) $matches[1]) + 1;
         }
+
+        while (StockIssue::withTrashed()->where('issue_number', sprintf('OUT-%s-%06d', $year, $next))->exists()) {
+            $next++;
+        }
+
         return sprintf('OUT-%s-%06d', $year, $next);
     }
 

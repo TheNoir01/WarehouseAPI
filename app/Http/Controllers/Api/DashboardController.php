@@ -75,7 +75,7 @@ class DashboardController extends Controller
         }
 
         // Low stock items list (Habis or Menipis)
-        $allItems = (clone $itemQuery)->with(['company', 'unit', 'stockBalances'])->get();
+        $allItems = (clone $itemQuery)->with(['company', 'category', 'unit', 'stockBalances'])->get();
         $alertItems = $allItems->filter(function ($i) {
             return in_array($i->stock_status, ['HABIS', 'MENIPIS']);
         })->values()->take(10)->map(function ($i) {
@@ -85,7 +85,7 @@ class DashboardController extends Controller
                 'name' => $i->name,
                 'company_code' => $i->company?->code,
                 'total_stock' => $i->total_stock,
-                'minimum_stock' => (float) $i->minimum_stock,
+                'minimum_stock' => (float) ($i->category_minimum_stock ?: $i->minimum_stock),
                 'unit' => $i->unit?->code,
                 'stock_status' => $i->stock_status,
             ];

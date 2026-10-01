@@ -43,7 +43,8 @@ class ItemService
     public function generateItemCode(?string $prefix = 'BRG'): string
     {
         $prefix = strtoupper(trim($prefix ?: 'BRG'));
-        $lastItem = Item::where('item_code', 'LIKE', "{$prefix}%")
+        $lastItem = Item::withTrashed()
+            ->where('item_code', 'LIKE', "{$prefix}%")
             ->orderByDesc('id')
             ->first();
 
@@ -52,11 +53,12 @@ class ItemService
             $nextNumber = ((int) $matches[1]) + 1;
         }
 
-        if (in_array($prefix, ['KJG', 'LNP', 'LMP'])) {
-            return sprintf('%s%03d', $prefix, $nextNumber);
+        $format = in_array($prefix, ['KJG', 'LNP', 'LMP']) ? '%s%03d' : '%s-%06d';
+        while (Item::withTrashed()->where('item_code', sprintf($format, $prefix, $nextNumber))->exists()) {
+            $nextNumber++;
         }
 
-        return sprintf('%s-%06d', $prefix, $nextNumber);
+        return sprintf($format, $prefix, $nextNumber);
     }
 
     /**

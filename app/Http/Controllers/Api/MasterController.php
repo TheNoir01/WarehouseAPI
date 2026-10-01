@@ -29,10 +29,12 @@ class MasterController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:100|unique:categories,name',
+            'minimum_stock' => 'nullable|numeric|min:0',
         ]);
 
         $category = Category::create([
             'name' => trim($validated['name']),
+            'minimum_stock' => isset($validated['minimum_stock']) ? max(0, (float) $validated['minimum_stock']) : 0.00,
             'description' => null,
         ]);
         AuditLog::record('CREATE_CATEGORY', Category::class, $category->id, null, $category->toArray());
@@ -44,12 +46,18 @@ class MasterController extends Controller
     {
         $validated = $request->validate([
             'name' => 'required|string|max:100|unique:categories,name,' . $category->id,
+            'minimum_stock' => 'nullable|numeric|min:0',
         ]);
 
         $old = $category->toArray();
-        $category->update([
+        $updateData = [
             'name' => trim($validated['name']),
-        ]);
+        ];
+        if ($request->has('minimum_stock')) {
+            $updateData['minimum_stock'] = max(0, (float) ($validated['minimum_stock'] ?? 0));
+        }
+
+        $category->update($updateData);
         AuditLog::record('UPDATE_CATEGORY', Category::class, $category->id, $old, $category->toArray());
 
         return $this->successResponse($category, 'Kategori berhasil diperbarui.');

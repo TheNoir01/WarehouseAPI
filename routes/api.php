@@ -70,12 +70,13 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/remnants', [MaterialRemnantController::class, 'index']);
     Route::get('/remnants/{materialRemnant}', [MaterialRemnantController::class, 'show']);
 
-    // Price Histories (Read: All Roles or Kepala Gudang / Admin / Purchasing)
+    // Purchasing & Price Management
     Route::get('/items/price-histories', [ItemController::class, 'priceHistories']);
+    Route::get('/purchasing/history', [GoodsReceiptController::class, 'purchasingHistory']);
 
-    // Purchasing Pricing Management: ONLY role Purchasing can input/update price
-    Route::middleware('role:purchasing')->group(function () {
+    Route::middleware('role:purchasing,admin')->group(function () {
         Route::put('/items/{item}/purchasing', [ItemController::class, 'updatePurchasing']);
+        Route::put('/goods-receipts/{goodsReceipt}/purchasing', [GoodsReceiptController::class, 'updatePurchasing']);
     });
 
     // Operational, Transactions, and Master Management (Karyawan, Kepala Gudang, and Admin)
@@ -86,7 +87,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
         // Goods Receipts (Barang Masuk)
         Route::post('/goods-receipts', [GoodsReceiptController::class, 'store']);
-        Route::put('/goods-receipts/{goodsReceipt}', [GoodsReceiptController::class, 'update']);
 
         // Item Master Management
         Route::post('/items', [ItemController::class, 'store']);

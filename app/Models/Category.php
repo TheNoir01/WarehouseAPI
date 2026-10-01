@@ -9,8 +9,16 @@ class Category extends Model
 {
     protected $fillable = [
         'name',
+        'minimum_stock',
         'description',
     ];
+
+    protected function casts(): array
+    {
+        return [
+            'minimum_stock' => 'decimal:2',
+        ];
+    }
 
     public function types(): HasMany
     {
