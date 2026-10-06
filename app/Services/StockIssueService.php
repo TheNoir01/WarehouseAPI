@@ -64,7 +64,7 @@ class StockIssueService
 
             foreach ($items as $itemRow) {
                 $itemId = (int) $itemRow['item_id'];
-                $locationId = (int) $itemRow['warehouse_location_id'];
+                $locationId = !empty($itemRow['warehouse_location_id']) ? (int) $itemRow['warehouse_location_id'] : null;
                 $qtyRequested = (float) $itemRow['qty_issued'];
 
                 if ($qtyRequested <= 0) {
@@ -85,8 +85,11 @@ class StockIssueService
                 // Query inventory batches ordered by pure FIFO (received_at ASC, id ASC)
                 $batchQuery = \App\Models\InventoryBatch::with(['company', 'item'])
                     ->whereIn('item_id', $matchingItemIds)
-                    ->where('warehouse_location_id', $locationId)
                     ->where('qty_remaining', '>', 0);
+
+                if ($locationId) {
+                    $batchQuery->where('warehouse_location_id', $locationId);
+                }
 
                 if ($companyId) {
                     $batchQuery->where('company_id', $companyId);
@@ -102,14 +105,16 @@ class StockIssueService
                 $totalAvailable = (float) $batches->sum('qty_remaining');
                 if ($totalAvailable < $qtyRequested) {
                     throw new \RuntimeException(
-                        "Stok fisik di rak ini tidak mencukupi untuk '{$selectedItem->name}'. Tersedia: " . number_format($totalAvailable, 2, ',', '.') . ", dibutuhkan: " . number_format($qtyRequested, 2, ',', '.')
+                        "Stok tidak mencukupi untuk '{$selectedItem->name}'. Tersedia: " . number_format($totalAvailable, 2, ',', '.') . ", dibutuhkan: " . number_format($qtyRequested, 2, ',', '.')
                     );
                 }
+
+                $issueItemLocationId = $locationId ?: ($batches->first()?->warehouse_location_id ?? (\App\Models\WarehouseLocation::first()?->id ?? 1));
 
                 $issueItem = StockIssueItem::create([
                     'stock_issue_id' => $issue->id,
                     'item_id' => $itemId,
-                    'warehouse_location_id' => $locationId,
+                    'warehouse_location_id' => $issueItemLocationId,
                     'qty_issued' => $qtyRequested,
                     'qty_used' => 0.00,
                     'qty_returned' => 0.00,
@@ -139,7 +144,7 @@ class StockIssueService
                         'batch_id' => $batch->id,
                         'item_id' => $batch->item_id,
                         'company_id' => $batch->company_id,
-                        'warehouse_location_id' => $locationId,
+                        'warehouse_location_id' => $batch->warehouse_location_id,
                         'qty_deducted' => $qtyToDeduct,
                     ]);
 
@@ -147,7 +152,7 @@ class StockIssueService
                     $this->stockService->moveStock(
                         companyId: $batch->company_id,
                         itemId: $batch->item_id,
-                        locationId: $locationId,
+                        locationId: $batch->warehouse_location_id,
                         type: 'OUT',
                         refType: StockIssue::class,
                         refId: $issue->id,

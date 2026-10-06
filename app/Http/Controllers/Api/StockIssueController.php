@@ -69,7 +69,7 @@ class StockIssueController extends Controller
             'notes' => 'nullable|string',
             'items' => 'required|array|min:1',
             'items.*.item_id' => 'required|exists:items,id',
-            'items.*.warehouse_location_id' => 'required|exists:warehouse_locations,id',
+            'items.*.warehouse_location_id' => 'nullable|exists:warehouse_locations,id',
             'items.*.qty_issued' => 'required|numeric|min:0.01',
             'items.*.notes' => 'nullable|string|max:255',
             'attachments' => 'nullable|array',
