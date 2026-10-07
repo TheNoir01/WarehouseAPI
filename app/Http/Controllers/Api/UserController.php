@@ -10,6 +10,7 @@ use App\Traits\ApiResponse;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
 
 class UserController extends Controller
 {
@@ -92,6 +93,11 @@ class UserController extends Controller
 
         $old = $user->toArray();
         $user->update($validated);
+
+        if (!empty($validated['is_active']) || !empty($validated['password'])) {
+            RateLimiter::clear("login:attempts:user:{$user->id}");
+            RateLimiter::clear("login:cooldown:user:{$user->id}");
+        }
 
         AuditLog::record('UPDATE_USER', User::class, $user->id, $old, $user->toArray());
 
