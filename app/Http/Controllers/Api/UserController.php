@@ -30,10 +30,10 @@ class UserController extends Controller
     public function store(Request $request): JsonResponse
     {
         $requester = $request->user();
-        $isRequesterAdmin = $requester?->isAdmin() || ($requester?->role?->name === 'admin');
-        $adminRole = Role::where('name', 'admin')->first();
+        $isRequesterMaintenance = ($requester?->role?->name === 'maintenance');
+        $maintenanceRole = Role::where('name', 'maintenance')->first();
 
-        if (!$isRequesterAdmin && (int) $request->role_id === (int) ($adminRole?->id)) {
+        if (!$isRequesterMaintenance && (int) $request->role_id === (int) ($maintenanceRole?->id)) {
             return $this->errorResponse('Akses ditolak: Hanya akun Maintenance yang dapat membuat pengguna dengan hak akses Maintenance.', 403);
         }
 
@@ -62,16 +62,16 @@ class UserController extends Controller
     public function update(Request $request, User $user): JsonResponse
     {
         $requester = $request->user();
-        $isRequesterAdmin = $requester?->isAdmin() || ($requester?->role?->name === 'admin');
-        $targetIsAdmin = $user->isAdmin() || ($user->role?->name === 'admin');
-        $adminRole = Role::where('name', 'admin')->first();
+        $isRequesterMaintenance = ($requester?->role?->name === 'maintenance');
+        $targetIsMaintenance = ($user->role?->name === 'maintenance');
+        $maintenanceRole = Role::where('name', 'maintenance')->first();
 
-        if (!$isRequesterAdmin && $targetIsAdmin) {
-            return $this->errorResponse('Akses ditolak: Kepala Gudang tidak diizinkan mengubah akun pengguna dengan hak akses Maintenance.', 403);
+        if (!$isRequesterMaintenance && $targetIsMaintenance) {
+            return $this->errorResponse('Akses ditolak: Anda tidak diizinkan mengubah akun pengguna dengan hak akses Maintenance.', 403);
         }
 
-        if (!$isRequesterAdmin && (int) $request->role_id === (int) ($adminRole?->id)) {
-            return $this->errorResponse('Akses ditolak: Kepala Gudang tidak dapat memberikan hak akses Maintenance.', 403);
+        if (!$isRequesterMaintenance && (int) $request->role_id === (int) ($maintenanceRole?->id)) {
+            return $this->errorResponse('Akses ditolak: Anda tidak dapat memberikan hak akses Maintenance.', 403);
         }
 
         $validated = $request->validate([

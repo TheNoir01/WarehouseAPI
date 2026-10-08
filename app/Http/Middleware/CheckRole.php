@@ -27,8 +27,8 @@ class CheckRole
 
         $userRole = $user->role?->name;
 
-        // Admin has superuser access
-        if ($userRole === 'admin') {
+        // Maintenance has superuser access to all system features
+        if ($userRole === 'maintenance') {
             return $next($request);
         }
 

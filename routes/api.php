@@ -50,8 +50,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/items', [ItemController::class, 'index']);
     Route::get('/items/{item}', [ItemController::class, 'show']);
 
-    // Reports: Stock Balances & Movements (Restricted to Kepala Gudang & Admin)
-    Route::middleware('role:kepala_gudang,admin')->group(function () {
+    // Reports: Stock Balances & Movements (Restricted to Kepala Gudang, Admin, Maintenance)
+    Route::middleware('role:kepala_gudang,admin,maintenance')->group(function () {
         Route::get('/stock', [StockController::class, 'index']);
         Route::get('/stock/movements', [StockController::class, 'movements']);
     });
@@ -74,13 +74,17 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/items/price-histories', [ItemController::class, 'priceHistories']);
     Route::get('/purchasing/history', [GoodsReceiptController::class, 'purchasingHistory']);
 
-    Route::middleware('role:purchasing,admin')->group(function () {
+    Route::middleware('role:purchasing,maintenance')->group(function () {
         Route::put('/items/{item}/purchasing', [ItemController::class, 'updatePurchasing']);
         Route::put('/goods-receipts/{goodsReceipt}/purchasing', [GoodsReceiptController::class, 'updatePurchasing']);
     });
 
-    // Operational, Transactions, and Master Management (Karyawan, Kepala Gudang, and Admin)
-    Route::middleware('role:karyawan,kepala_gudang,admin')->group(function () {
+    Route::middleware('role:admin,maintenance')->group(function () {
+        Route::post('/goods-receipts/{goodsReceipt}/unlock-purchasing', [GoodsReceiptController::class, 'unlockPurchasing']);
+    });
+
+    // Operational, Transactions, and Master Management (Karyawan, Kepala Gudang, and Maintenance)
+    Route::middleware('role:karyawan,kepala_gudang,maintenance')->group(function () {
         // Transactions: Stock Issue & Returns
         Route::post('/goods-issues', [StockIssueController::class, 'store']);
         Route::post('/returns', [StockReturnController::class, 'store']);
@@ -123,8 +127,8 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::delete('/companies/{company}', [CompanyController::class, 'destroy']);
     });
 
-    // User & Access Management (Restricted to Kepala Gudang & Admin)
-    Route::middleware('role:kepala_gudang,admin')->group(function () {
+    // User & Access Management (Restricted to Kepala Gudang, Admin, Maintenance)
+    Route::middleware('role:kepala_gudang,admin,maintenance')->group(function () {
         Route::get('/users', [UserController::class, 'index']);
         Route::post('/users', [UserController::class, 'store']);
         Route::put('/users/{user}', [UserController::class, 'update']);

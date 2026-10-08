@@ -118,6 +118,25 @@ class GoodsReceiptController extends Controller
         }
     }
 
+    public function unlockPurchasing(Request $request, GoodsReceipt $goodsReceipt): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user->isMaintenance() && !$user->isAdmin()) {
+            return $this->errorResponse('Akses ditolak: Hanya Admin atau Maintenance yang dapat membuka kunci akses No. PO & Harga.', null, 403);
+        }
+
+        try {
+            $receipt = $this->goodsReceiptService->unlockPurchasingInfo(
+                receipt: $goodsReceipt,
+                adminUserId: $user->id
+            );
+
+            return $this->successResponse($receipt, "Akses edit No. PO & Harga untuk dokumen [{$goodsReceipt->receipt_number}] berhasil dibuka kembali oleh {$user->name}.");
+        } catch (\Throwable $e) {
+            return $this->errorResponse($e->getMessage(), null, 422);
+        }
+    }
+
     public function show(GoodsReceipt $goodsReceipt): JsonResponse
     {
         $goodsReceipt->load([
@@ -125,6 +144,7 @@ class GoodsReceiptController extends Controller
             'supplier',
             'warehouse',
             'receivedBy',
+            'purchasingUnlockedBy',
             'items.item.unit',
             'items.location',
             'attachments',
@@ -134,7 +154,7 @@ class GoodsReceiptController extends Controller
         $purchasingLogs = \App\Models\AuditLog::with('user')
             ->where('entity_type', GoodsReceipt::class)
             ->where('entity_id', $goodsReceipt->id)
-            ->where('action', 'PURCHASING_UPDATE')
+            ->whereIn('action', ['PURCHASING_UPDATE', 'PURCHASING_UNLOCK'])
             ->orderBy('id', 'desc')
             ->get();
         $goodsReceipt->purchasing_logs = $purchasingLogs;
@@ -145,7 +165,7 @@ class GoodsReceiptController extends Controller
     public function purchasingHistory(Request $request): JsonResponse
     {
         $query = \App\Models\AuditLog::with(['user'])
-            ->whereIn('action', ['PURCHASING_UPDATE', 'ITEM_PURCHASING_UPDATE'])
+            ->whereIn('action', ['PURCHASING_UPDATE', 'ITEM_PURCHASING_UPDATE', 'PURCHASING_UNLOCK'])
             ->orderBy('id', 'desc');
 
         if ($request->filled('start_date') && $request->filled('end_date')) {

@@ -44,14 +44,14 @@ class AuthController extends Controller
             return $this->errorResponse('Akun Anda dinonaktifkan atau diblokir. Silakan hubungi admin.', null, 403);
         }
 
-        // 4. Role Admin (Maintenance): TIDAK memakai sistem count false input dan bebas dari pemblokiran
-        $isAdmin = $user->isAdmin() || ($user->role?->name === 'admin');
-        if ($isAdmin) {
+        // 4. Role Maintenance & Admin: TIDAK memakai sistem count false input dan bebas dari pemblokiran
+        $isPrivileged = in_array($user->role?->name, ['maintenance', 'admin']);
+        if ($isPrivileged) {
             if (!Hash::check($password, $user->password)) {
                 AuditLog::record('LOGIN_FAILED', User::class, $user->id, null, [
                     'input' => $loginInput,
                     'ip' => $request->ip(),
-                    'role' => 'admin',
+                    'role' => $user->role?->name,
                 ], $user->id);
 
                 return $this->errorResponse('Password yang Anda masukkan salah.', null, 401);

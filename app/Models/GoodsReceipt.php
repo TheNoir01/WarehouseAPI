@@ -23,12 +23,21 @@ class GoodsReceipt extends Model
         'received_by',
         'status',
         'notes',
+        'purchasing_edit_count',
+        'is_purchasing_locked',
+        'purchasing_locked_at',
+        'purchasing_unlocked_at',
+        'purchasing_unlocked_by',
     ];
 
     protected function casts(): array
     {
         return [
             'received_date' => 'date',
+            'is_purchasing_locked' => 'boolean',
+            'purchasing_edit_count' => 'integer',
+            'purchasing_locked_at' => 'datetime',
+            'purchasing_unlocked_at' => 'datetime',
         ];
     }
 
@@ -50,6 +59,11 @@ class GoodsReceipt extends Model
     public function receivedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'received_by');
+    }
+
+    public function purchasingUnlockedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'purchasing_unlocked_by');
     }
 
     public function items(): HasMany

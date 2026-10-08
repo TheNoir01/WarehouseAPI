@@ -48,6 +48,11 @@ class User extends Authenticatable
         return $this->belongsTo(Company::class);
     }
 
+    public function isMaintenance(): bool
+    {
+        return $this->role?->name === 'maintenance';
+    }
+
     public function isAdmin(): bool
     {
         return $this->role?->name === 'admin';

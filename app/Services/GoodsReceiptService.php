@@ -197,14 +197,39 @@ class GoodsReceiptService
     public function updatePurchasingInfo(GoodsReceipt $receipt, array $data, ?int $userId = null): GoodsReceipt
     {
         $userId = $userId ?? auth('sanctum')->id() ?? auth()->id() ?? 1;
+        $user = \App\Models\User::with('role')->find($userId);
+        $isPurchasing = ($user?->role?->name === 'purchasing');
 
-        return DB::transaction(function () use ($receipt, $data, $userId) {
+        // Jika user adalah role purchasing dan dokumen sudah terkunci (atau edit count >= 3)
+        if ($isPurchasing && ($receipt->is_purchasing_locked || (int) $receipt->purchasing_edit_count >= 3)) {
+            throw new \Exception("Akses edit No. PO & Harga untuk dokumen [{$receipt->receipt_number}] telah terkunci karena telah diinput/diubah sebanyak 3 kali. Silakan hubungi Admin untuk membuka akses kembali.");
+        }
+
+        return DB::transaction(function () use ($receipt, $data, $userId, $isPurchasing) {
             $oldPo = $receipt->po_number;
             $newPo = isset($data['po_number']) ? trim($data['po_number']) : $receipt->po_number;
 
-            $receipt->update([
+            $updatePayload = [
                 'po_number' => $newPo,
-            ]);
+            ];
+
+            // Cek apakah sebelum update ini dokumen sudah memiliki No. PO atau harga
+            $hasExistingPo = !empty(trim((string) $oldPo));
+            $hasExistingPrice = $receipt->items()->where('unit_price', '>', 0)->exists();
+            $alreadyHasData = ($hasExistingPo || $hasExistingPrice);
+
+            // Jika belum ada No. PO & harga, ini penginputan awal (jangan masuk counting).
+            // Counting hanya bertambah jika sudah ada No. PO / harga lalu diubah kembali.
+            if ($isPurchasing && $alreadyHasData) {
+                $newCount = ((int) $receipt->purchasing_edit_count) + 1;
+                $updatePayload['purchasing_edit_count'] = $newCount;
+                if ($newCount >= 3) {
+                    $updatePayload['is_purchasing_locked'] = true;
+                    $updatePayload['purchasing_locked_at'] = now();
+                }
+            }
+
+            $receipt->update($updatePayload);
 
             $priceChangesOld = [];
             $priceChangesNew = [];
@@ -291,6 +316,35 @@ class GoodsReceiptService
             ], $userId);
 
             return $receipt->fresh()->load(['items.item', 'items.location', 'company', 'supplier', 'warehouse', 'receivedBy', 'attachments']);
+        });
+    }
+
+    /**
+     * Unlock PO & price editing for a Goods Receipt (Admin / Maintenance action).
+     */
+    public function unlockPurchasingInfo(GoodsReceipt $receipt, int $adminUserId): GoodsReceipt
+    {
+        return DB::transaction(function () use ($receipt, $adminUserId) {
+            $oldCount = (int) $receipt->purchasing_edit_count;
+            $wasLocked = (bool) $receipt->is_purchasing_locked;
+
+            $receipt->update([
+                'is_purchasing_locked' => false,
+                'purchasing_edit_count' => 0,
+                'purchasing_unlocked_at' => now(),
+                'purchasing_unlocked_by' => $adminUserId,
+            ]);
+
+            AuditLog::record('PURCHASING_UNLOCK', GoodsReceipt::class, $receipt->id, [
+                'previous_edit_count' => $oldCount,
+                'was_locked' => $wasLocked,
+            ], [
+                'is_purchasing_locked' => false,
+                'purchasing_edit_count' => 0,
+                'unlocked_by' => $adminUserId,
+            ], $adminUserId);
+
+            return $receipt->fresh()->load(['items.item', 'items.location', 'company', 'supplier', 'warehouse', 'receivedBy', 'purchasingUnlockedBy', 'attachments']);
         });
     }
 }
