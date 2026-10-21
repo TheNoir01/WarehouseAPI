@@ -67,6 +67,7 @@ class GoodsReceiptController extends Controller
             'supplier_name' => 'nullable|string|max:150',
             'warehouse_id' => 'nullable|exists:warehouses,id',
             'delivery_order_number' => 'nullable|string|max:100',
+            'po_number' => 'nullable|string|max:100',
             'received_date' => 'nullable|date',
             'receipt_number' => 'nullable|string|max:50|unique:goods_receipts,receipt_number',
             'notes' => 'nullable|string',
@@ -137,6 +138,56 @@ class GoodsReceiptController extends Controller
         }
     }
 
+    public function update(Request $request, GoodsReceipt $goodsReceipt): JsonResponse
+    {
+        $validated = $request->validate([
+            'supplier_name' => 'nullable|string|max:150',
+            'supplier_id' => 'nullable|exists:suppliers,id',
+            'delivery_order_number' => 'nullable|string|max:100',
+            'po_number' => 'nullable|string|max:100',
+            'notes' => 'nullable|string',
+            'items' => 'required|array|min:1',
+            'items.*.id' => 'nullable|integer',
+            'items.*.item_id' => 'nullable|exists:items,id',
+            'items.*.warehouse_location_id' => 'nullable|exists:warehouse_locations,id',
+            'items.*.qty' => 'required|numeric|min:0.01',
+            'items.*.condition' => 'nullable|in:good,damaged,other',
+            'items.*.notes' => 'nullable|string|max:255',
+        ]);
+
+        try {
+            $receipt = $this->goodsReceiptService->updateReceipt(
+                receipt: $goodsReceipt,
+                data: $validated,
+                items: $validated['items'],
+                userId: $request->user()?->id
+            );
+
+            return $this->successResponse($receipt, 'Koreksi penerimaan barang berhasil disimpan dan stok telah disesuaikan.');
+        } catch (\Throwable $e) {
+            return $this->errorResponse($e->getMessage(), null, 422);
+        }
+    }
+
+    public function unlockKaryawan(Request $request, GoodsReceipt $goodsReceipt): JsonResponse
+    {
+        $user = $request->user();
+        if (!$user->isKepalaGudang() && !$user->isAdmin() && !$user->isMaintenance()) {
+            return $this->errorResponse('Akses ditolak: Hanya Kepala Gudang atau Admin yang dapat membuka kunci dokumen penerimaan ini.', null, 403);
+        }
+
+        try {
+            $receipt = $this->goodsReceiptService->unlockKaryawanReceipt(
+                receipt: $goodsReceipt,
+                unlockedByUserId: $user->id
+            );
+
+            return $this->successResponse($receipt, "Kunci dokumen [{$goodsReceipt->receipt_number}] berhasil dibuka oleh {$user->name}. Role Karyawan sekarang dapat mengedit kembali.");
+        } catch (\Throwable $e) {
+            return $this->errorResponse($e->getMessage(), null, 422);
+        }
+    }
+
     public function show(GoodsReceipt $goodsReceipt): JsonResponse
     {
         $goodsReceipt->load([
@@ -145,10 +196,39 @@ class GoodsReceiptController extends Controller
             'warehouse',
             'receivedBy',
             'purchasingUnlockedBy',
+            'karyawanUnlockedBy',
             'items.item.unit',
             'items.location',
             'attachments',
         ]);
+
+        // Attach inventory batch info with qty_used for each item
+        $batches = \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)
+            ->where('source_id', $goodsReceipt->id)
+            ->get()
+            ->keyBy('item_id');
+
+        foreach ($goodsReceipt->items as $it) {
+            $b = $batches->get($it->item_id);
+            if ($b) {
+                $qtyInitial = (float) $b->qty_initial;
+                $qtyRemaining = (float) $b->qty_remaining;
+                $qtyUsed = max(0, $qtyInitial - $qtyRemaining);
+                $it->batch = [
+                    'id' => $b->id,
+                    'batch_number' => $b->batch_number,
+                    'qty_initial' => $qtyInitial,
+                    'qty_remaining' => $qtyRemaining,
+                    'qty_used' => $qtyUsed,
+                ];
+            } else {
+                $it->batch = [
+                    'qty_initial' => (float) $it->qty,
+                    'qty_remaining' => (float) $it->qty,
+                    'qty_used' => 0.0,
+                ];
+            }
+        }
 
         // Load purchasing audit logs for this specific goods receipt
         $purchasingLogs = \App\Models\AuditLog::with('user')
@@ -158,6 +238,15 @@ class GoodsReceiptController extends Controller
             ->orderBy('id', 'desc')
             ->get();
         $goodsReceipt->purchasing_logs = $purchasingLogs;
+
+        // Load correction audit logs for this specific goods receipt
+        $correctionLogs = \App\Models\AuditLog::with('user')
+            ->where('entity_type', GoodsReceipt::class)
+            ->where('entity_id', $goodsReceipt->id)
+            ->whereIn('action', ['GOODS_RECEIPT_CORRECTION', 'GOODS_RECEIPT_UNLOCK'])
+            ->orderBy('id', 'desc')
+            ->get();
+        $goodsReceipt->correction_logs = $correctionLogs;
 
         return $this->successResponse($goodsReceipt, 'Detail penerimaan barang berhasil diambil.');
     }

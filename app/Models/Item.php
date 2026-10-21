@@ -24,8 +24,6 @@ class Item extends Model
         'is_remnant',
         'parent_item_id',
         'specification',
-        'po_number',
-        'purchase_price',
         'description',
     ];
 
@@ -33,14 +31,12 @@ class Item extends Model
         'total_stock',
         'stock_status',
         'suppliers_summary',
-        'category_minimum_stock',
     ];
 
     protected function casts(): array
     {
         return [
             'minimum_stock' => 'decimal:2',
-            'purchase_price' => 'decimal:2',
             'is_remnant' => 'boolean',
         ];
     }
@@ -90,14 +86,14 @@ class Item extends Model
         return $this->hasMany(StockMovement::class);
     }
 
-    public function goodsReceiptItems(): HasMany
-    {
-        return $this->hasMany(GoodsReceiptItem::class);
-    }
-
     public function materialRemnants(): HasMany
     {
         return $this->hasMany(MaterialRemnant::class, 'parent_item_id');
+    }
+
+    public function goodsReceiptItems(): HasMany
+    {
+        return $this->hasMany(GoodsReceiptItem::class);
     }
 
     public function priceHistories(): HasMany
@@ -127,7 +123,6 @@ class Item extends Model
     public function getStockStatusAttribute(): string
     {
         $stock = (float) $this->total_stock;
-        // Priority to category minimum stock as requested by user
         $min = (float) $this->category_minimum_stock;
         if ($min <= 0 && (float) $this->minimum_stock > 0) {
             $min = (float) $this->minimum_stock;
@@ -145,19 +140,25 @@ class Item extends Model
     public function getSuppliersListAttribute(): array
     {
         $suppliers = [];
-        $sources = [
-            (string) ($this->description ?? ''),
-            (string) ($this->specification ?? ''),
-        ];
 
-        foreach ($sources as $source) {
-            if (!empty($source) && preg_match('/Supplier\s*:\s*([^|\n]+)/i', $source, $matches)) {
-                $rawParts = explode(',', $matches[1]);
-                foreach ($rawParts as $p) {
-                    $clean = trim($p);
-                    if ($clean !== '' && !in_array($clean, $suppliers, true)) {
-                        $suppliers[] = $clean;
-                    }
+        // 1. Ambil dari riwayat dokumen penerimaan barang masuk
+        if ($this->relationLoaded('goodsReceiptItems')) {
+            foreach ($this->goodsReceiptItems as $gri) {
+                $sName = trim($gri->goodsReceipt?->supplier?->name ?? $gri->goodsReceipt?->supplier_name ?? '');
+                if ($sName !== '' && !in_array($sName, $suppliers, true)) {
+                    $suppliers[] = $sName;
+                }
+            }
+        }
+
+        // 2. Fallback dari description
+        $desc = (string) ($this->description ?? '');
+        if (!empty($desc) && preg_match('/Supplier\s*:\s*([^|\n]+)/i', $desc, $matches)) {
+            $rawParts = explode(',', $matches[1]);
+            foreach ($rawParts as $p) {
+                $clean = trim($p);
+                if ($clean !== '' && !in_array($clean, $suppliers, true)) {
+                    $suppliers[] = $clean;
                 }
             }
         }
@@ -171,7 +172,8 @@ class Item extends Model
     }
 
     /**
-     * Scope for blazing fast, multi-keyword and typo-tolerant search across all inventory items.
+     * Scope for multi-word / tokenized flexible live search.
+     * Matches every random keyword across item fields regardless of order.
      */
     public function scopeFuzzySearch($query, string $search)
     {
@@ -180,77 +182,32 @@ class Item extends Model
             return $query;
         }
 
-        $knownCorrections = [
-            'glavanis' => 'galvanis',
-            'glvanis' => 'galvanis',
-            'galfanis' => 'galvanis',
-            'grinda' => 'gerinda',
-            'gerrenda' => 'gerinda',
-            'fiting' => 'fitting',
-            'kones' => 'cones',
-            'spandeck' => 'spandek',
-            'dopp' => 'dop',
-            'nepel' => 'napel',
-            'naple' => 'napel',
-            'isolasi' => 'solasi',
-            'solder' => 'tinol',
-            'v-lock' => 'vlok',
-            'vlock' => 'vlok',
-            'reduser' => 'reducer',
-            'las' => 'welding',
-        ];
+        $tokens = preg_split('/\s+/', $search, -1, PREG_SPLIT_NO_EMPTY);
+        if (empty($tokens)) {
+            return $query;
+        }
 
-        $tokens = preg_split('/\s+/', strtolower($search));
-
-        return $query->where(function ($masterQ) use ($tokens, $knownCorrections) {
-            foreach ($tokens as $token) {
-                $token = trim($token);
-                if ($token === '') continue;
-
-                $variants = [$token];
-
-                // Convert dot to comma and comma to dot (e.g. 0.8 <-> 0,8)
-                if (strpos($token, '.') !== false) {
-                    $variants[] = str_replace('.', ',', $token);
-                } elseif (strpos($token, ',') !== false) {
-                    $variants[] = str_replace(',', '.', $token);
-                }
-
-                if (isset($knownCorrections[$token])) {
-                    $variants[] = $knownCorrections[$token];
-                }
-                foreach ($knownCorrections as $typo => $correct) {
-                    if ($token === $correct && !in_array($typo, $variants, true)) {
-                        $variants[] = $typo;
-                    }
-                }
-
-                if (count($variants) === 1 && strlen($token) >= 4) {
-                    $targetWords = [
-                        'galvanis', 'gerinda', 'fitting', 'cutting', 'wheel', 'baut',
-                        'socket', 'flange', 'elbow', 'nipple', 'napel', 'gasket',
-                        'spandek', 'bearing', 'kabel', 'pipa', 'plat', 'grating', 'conduit'
-                    ];
-                    foreach ($targetWords as $tw) {
-                        if (levenshtein($token, $tw) <= 2) {
-                            $variants[] = $tw;
-                        }
-                    }
-                }
-
-                $variants = array_values(array_unique($variants));
-
-                $masterQ->where(function ($tokenQ) use ($variants) {
-                    foreach ($variants as $v) {
-                        $tokenQ->orWhere('name', 'LIKE', "%{$v}%")
-                               ->orWhere('item_code', 'LIKE', "%{$v}%")
-                               ->orWhere('po_number', 'LIKE', "%{$v}%")
-                               ->orWhere('specification', 'LIKE', "%{$v}%")
-                               ->orWhere('barcode', 'LIKE', "%{$v}%")
-                               ->orWhere('qr_code', 'LIKE', "%{$v}%");
-                    }
-                });
-            }
+        return $query->where(function ($q) use ($tokens, $search) {
+            // Direct exact match on codes
+            $q->where('item_code', $search)
+              ->orWhere('barcode', $search)
+              ->orWhere('qr_code', $search)
+              // Multi-token match: all typed words must exist in the item attributes
+              ->orWhere(function ($multiQ) use ($tokens) {
+                  foreach ($tokens as $token) {
+                      $multiQ->where(function ($tokenQ) use ($token) {
+                          $tokenQ->where('name', 'LIKE', "%{$token}%")
+                                 ->orWhere('item_code', 'LIKE', "%{$token}%")
+                                 ->orWhere('barcode', 'LIKE', "%{$token}%")
+                                 ->orWhere('qr_code', 'LIKE', "%{$token}%")
+                                 ->orWhere('po_number', 'LIKE', "%{$token}%")
+                                 ->orWhere('specification', 'LIKE', "%{$token}%")
+                                 ->orWhereHas('category', function ($catQ) use ($token) {
+                                     $catQ->where('name', 'LIKE', "%{$token}%");
+                                 });
+                      });
+                  }
+              });
         });
     }
 }

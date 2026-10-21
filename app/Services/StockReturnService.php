@@ -18,15 +18,41 @@ class StockReturnService
         protected StockService $stockService
     ) {}
 
-    public function generateReturnNumber(): string
+    public function generateReturnNumber(?string $date = null): string
     {
-        $year = date('Y');
-        $last = StockReturn::whereYear('created_at', $year)->orderByDesc('id')->first();
-        $next = 1;
-        if ($last && preg_match('/RET-\d+-(\d+)$/', $last->return_number, $matches)) {
-            $next = ((int) $matches[1]) + 1;
+        $romanMonths = [
+            1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV', 5 => 'V', 6 => 'VI',
+            7 => 'VII', 8 => 'VIII', 9 => 'IX', 10 => 'X', 11 => 'XI', 12 => 'XII',
+        ];
+
+        $timestamp = !empty($date) ? strtotime($date) : time();
+        if (!$timestamp) {
+            $timestamp = time();
         }
-        return sprintf('RET-%s-%06d', $year, $next);
+        $monthNum = (int) date('n', $timestamp);
+        $year = date('Y', $timestamp);
+        $romanMonth = $romanMonths[$monthNum] ?? 'I';
+
+        $prefix = "RET-{$romanMonth}-{$year}-";
+
+        $maxSeq = 0;
+        $regex = '/^' . preg_quote($prefix, '/') . '(\d+)$/';
+
+        $existingNumbers = StockReturn::withTrashed()
+            ->where('return_number', 'LIKE', "{$prefix}%")
+            ->pluck('return_number');
+
+        foreach ($existingNumbers as $num) {
+            if (preg_match($regex, $num, $matches)) {
+                $seq = (int) $matches[1];
+                if ($seq > $maxSeq) {
+                    $maxSeq = $seq;
+                }
+            }
+        }
+
+        $nextSeq = $maxSeq + 1;
+        return $prefix . $nextSeq;
     }
 
     public function generateRemnantCode(string $parentCode): string
@@ -56,12 +82,22 @@ class StockReturnService
 
         return DB::transaction(function () use ($data, $items, $attachments, $userId) {
             $stockIssue = StockIssue::with('items.item')->findOrFail($data['stock_issue_id']);
-            $returnNumber = !empty($data['return_number']) ? $data['return_number'] : $this->generateReturnNumber();
+            $returnNumber = !empty($data['return_number'])
+                ? $data['return_number']
+                : $this->generateReturnNumber($data['returned_date'] ?? null);
+
+            $firstIssueItem = StockIssueItem::with('item')->find($items[0]['stock_issue_item_id'] ?? null);
+            $firstAllocation = $firstIssueItem 
+                ? \App\Models\StockIssueAllocation::where('stock_issue_item_id', $firstIssueItem->id)->first() 
+                : null;
+
+            $effectiveCompanyId = $stockIssue->company_id 
+                ?: ($firstAllocation?->company_id ?? ($firstIssueItem?->item?->company_id ?? null));
 
             $return = StockReturn::create([
                 'return_number' => $returnNumber,
                 'stock_issue_id' => $stockIssue->id,
-                'company_id' => $stockIssue->company_id,
+                'company_id' => $effectiveCompanyId,
                 'returned_date' => $data['returned_date'] ?? now()->toDateString(),
                 'returned_by_name' => $data['returned_by_name'],
                 'received_by' => $userId,
@@ -91,10 +127,20 @@ class StockReturnService
                 $returnStatus = $itemRow['return_status'] ?? 'sisa';
                 $condition = $itemRow['condition'] ?? 'good';
 
+                // Cari alokasi pemotongan stok keluar (FIFO allocation) untuk mengetahui pemilik dan item fisik asalnya
+                $allocations = \App\Models\StockIssueAllocation::where('stock_issue_item_id', $issueItem->id)
+                    ->orderByDesc('id')
+                    ->get();
+                $firstAlloc = $allocations->first();
+
+                $itemCompanyId = (int) ($firstAlloc?->company_id ?: ($issueItem->item->company_id ?: ($stockIssue->company_id ?: 5)));
+                $actualItem = ($firstAlloc && $firstAlloc->item_id) ? \App\Models\Item::find($firstAlloc->item_id) : $issueItem->item;
+                $parentItem = $actualItem ?: $issueItem->item;
+
                 $returnItem = StockReturnItem::create([
                     'stock_return_id' => $return->id,
                     'stock_issue_item_id' => $issueItem->id,
-                    'item_id' => $issueItem->item_id,
+                    'item_id' => $parentItem->id,
                     'warehouse_location_id' => $locationId,
                     'qty_returned' => $qtyReturned,
                     'return_status' => $returnStatus,
@@ -113,24 +159,26 @@ class StockReturnService
                     'qty_lost' => $qtyLost,
                 ]);
 
-                // If sisa material with details, create MaterialRemnant record
-                if ($returnStatus === 'sisa_material' || !empty($itemRow['material_remnant'])) {
+                $isRemnantOrScrap = ($returnStatus === 'sisa_material')
+                    || in_array(strtolower($condition), ['scrap', 'potongan', 'damaged', 'rusak']);
+
+                // If sisa material/potongan/scrap, create MaterialRemnant record
+                if ($isRemnantOrScrap || !empty($itemRow['material_remnant'])) {
                     $remnantData = $itemRow['material_remnant'] ?? [];
-                    $parentItem = $issueItem->item;
                     $remnantCode = !empty($remnantData['remnant_code']) 
                         ? $remnantData['remnant_code'] 
                         : $this->generateRemnantCode($parentItem->item_code);
 
                     MaterialRemnant::create([
                         'remnant_code' => $remnantCode,
-                        'company_id' => $stockIssue->company_id,
+                        'company_id' => $itemCompanyId,
                         'parent_item_id' => $parentItem->id,
                         'derived_item_id' => null,
                         'stock_issue_id' => $stockIssue->id,
                         'stock_return_item_id' => $returnItem->id,
                         'warehouse_location_id' => $locationId,
-                        'shape_condition' => $remnantData['shape_condition'] ?? 'Tidak Beraturan',
-                        'dimension_description' => $remnantData['dimension_description'] ?? 'Sisa Potongan Lapangan',
+                        'shape_condition' => $remnantData['shape_condition'] ?? 'Sisa Potongan',
+                        'dimension_description' => !empty($remnantData['dimension_description']) ? $remnantData['dimension_description'] : (!empty($itemRow['notes']) ? $itemRow['notes'] : 'Sisa Potongan Lapangan'),
                         'estimated_area' => $remnantData['estimated_area'] ?? null,
                         'estimated_weight' => $remnantData['estimated_weight'] ?? null,
                         'qty' => $qtyReturned,
@@ -141,19 +189,56 @@ class StockReturnService
                     ]);
                 }
 
-                // Increment stock balance
-                $this->stockService->moveStock(
-                    companyId: $stockIssue->company_id,
-                    itemId: $issueItem->item_id,
-                    locationId: $locationId,
-                    type: 'RETURN',
-                    refType: StockReturn::class,
-                    refId: $return->id,
-                    refNumber: $return->return_number,
-                    qty: $qtyReturned,
-                    notes: "Pengembalian No: {$return->return_number} ex OUT: {$stockIssue->issue_number} ({$returnStatus})",
-                    userId: $userId
-                );
+                // HANYA barang yang kembali UTUH (kondisi baik / tidak jadi terpakai) yang menambah saldo stok gudang utama
+                if (!$isRemnantOrScrap) {
+                    $returnRemaining = $qtyReturned;
+                    foreach ($allocations as $alloc) {
+                        if ($returnRemaining <= 0) break;
+                        $batch = \App\Models\InventoryBatch::find($alloc->batch_id);
+                        if ($batch) {
+                            $canRestore = min($returnRemaining, (float)$alloc->qty_deducted);
+                            $batch->increment('qty_remaining', $canRestore);
+
+                            // Increment stock balance directly for this batch's company & item
+                            $this->stockService->moveStock(
+                                companyId: $batch->company_id,
+                                itemId: $batch->item_id,
+                                locationId: $locationId,
+                                type: 'RETURN',
+                                refType: StockReturn::class,
+                                refId: $return->id,
+                                refNumber: $return->return_number,
+                                qty: $canRestore,
+                                notes: "Pengembalian No: {$return->return_number} ex OUT: {$stockIssue->issue_number} ({$returnStatus}) [Batch: {$batch->batch_number}]",
+                                userId: $userId
+                            );
+
+                            $returnRemaining -= $canRestore;
+                        }
+                    }
+
+                    if ($returnRemaining > 0) {
+                        $firstBatch = \App\Models\InventoryBatch::where('item_id', $parentItem->id)
+                            ->where('company_id', $itemCompanyId)
+                            ->latest('id')
+                            ->first();
+                        if ($firstBatch) {
+                            $firstBatch->increment('qty_remaining', $returnRemaining);
+                        }
+                        $this->stockService->moveStock(
+                            companyId: $itemCompanyId,
+                            itemId: $parentItem->id,
+                            locationId: $locationId,
+                            type: 'RETURN',
+                            refType: StockReturn::class,
+                            refId: $return->id,
+                            refNumber: $return->return_number,
+                            qty: $returnRemaining,
+                            notes: "Pengembalian No: {$return->return_number} ex OUT: {$stockIssue->issue_number} ({$returnStatus})",
+                            userId: $userId
+                        );
+                    }
+                }
             }
 
             // Check if all items in the issue are fully settled

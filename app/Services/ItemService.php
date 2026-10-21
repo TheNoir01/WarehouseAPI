@@ -151,13 +151,11 @@ class ItemService
     {
         $term = trim($term);
 
-        $query = Item::with(['company', 'category', 'type', 'unit', 'stockBalances.location'])
-            ->where(function ($q) use ($term) {
-                $q->where('qr_code', $term)
-                  ->orWhere('barcode', $term)
-                  ->orWhere('item_code', $term)
-                  ->orWhere('name', 'LIKE', "%{$term}%");
-            });
+        $query = Item::with(['company', 'category', 'type', 'unit', 'stockBalances.location']);
+
+        if ($term !== '') {
+            $query->fuzzySearch($term);
+        }
 
         if ($companyId) {
             $query->where('company_id', $companyId);

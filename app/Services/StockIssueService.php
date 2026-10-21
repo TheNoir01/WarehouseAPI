@@ -15,24 +15,41 @@ class StockIssueService
         protected StockService $stockService
     ) {}
 
-    public function generateIssueNumber(): string
+    public function generateIssueNumber(?string $date = null): string
     {
-        $year = date('Y');
-        $last = StockIssue::withTrashed()
-            ->where('issue_number', 'LIKE', "OUT-{$year}-%")
-            ->orderByDesc('id')
-            ->first();
+        $romanMonths = [
+            1 => 'I', 2 => 'II', 3 => 'III', 4 => 'IV', 5 => 'V', 6 => 'VI',
+            7 => 'VII', 8 => 'VIII', 9 => 'IX', 10 => 'X', 11 => 'XI', 12 => 'XII',
+        ];
 
-        $next = 1;
-        if ($last && preg_match('/OUT-\d+-(\d+)$/', $last->issue_number, $matches)) {
-            $next = ((int) $matches[1]) + 1;
+        $timestamp = !empty($date) ? strtotime($date) : time();
+        if (!$timestamp) {
+            $timestamp = time();
+        }
+        $monthNum = (int) date('n', $timestamp);
+        $year = date('Y', $timestamp);
+        $romanMonth = $romanMonths[$monthNum] ?? 'I';
+
+        $prefix = "OUT-{$romanMonth}-{$year}-";
+
+        $maxSeq = 0;
+        $regex = '/^' . preg_quote($prefix, '/') . '(\d+)$/';
+
+        $existingNumbers = StockIssue::withTrashed()
+            ->where('issue_number', 'LIKE', "{$prefix}%")
+            ->pluck('issue_number');
+
+        foreach ($existingNumbers as $num) {
+            if (preg_match($regex, $num, $matches)) {
+                $seq = (int) $matches[1];
+                if ($seq > $maxSeq) {
+                    $maxSeq = $seq;
+                }
+            }
         }
 
-        while (StockIssue::withTrashed()->where('issue_number', sprintf('OUT-%s-%06d', $year, $next))->exists()) {
-            $next++;
-        }
-
-        return sprintf('OUT-%s-%06d', $year, $next);
+        $nextSeq = $maxSeq + 1;
+        return $prefix . $nextSeq;
     }
 
     /**
@@ -47,7 +64,7 @@ class StockIssueService
         $userId = $userId ?? auth('sanctum')->id() ?? auth()->id() ?? 1;
 
         return DB::transaction(function () use ($data, $items, $attachments, $userId) {
-            $issueNumber = !empty($data['issue_number']) ? $data['issue_number'] : $this->generateIssueNumber();
+            $issueNumber = !empty($data['issue_number']) ? $data['issue_number'] : $this->generateIssueNumber($data['issued_date'] ?? null);
             $companyId = !empty($data['company_id']) ? (int) $data['company_id'] : null;
 
             $issue = StockIssue::create([
@@ -129,9 +146,27 @@ class StockIssueService
                         break;
                     }
 
-                    $availableInBatch = (float) $batch->qty_remaining;
+                    // Verify physical stock balance at the batch's location
+                    $balance = \App\Models\StockBalance::where('company_id', $batch->company_id)
+                        ->where('item_id', $batch->item_id)
+                        ->where('warehouse_location_id', $batch->warehouse_location_id)
+                        ->lockForUpdate()
+                        ->first();
+                    $actualBalance = $balance ? (float) $balance->qty : 0.0;
+                    if ($actualBalance <= 0.00001) {
+                        if ((float)$batch->qty_remaining > 0) {
+                            $batch->update(['qty_remaining' => 0]);
+                        }
+                        continue;
+                    }
+
+                    $availableInBatch = min((float) $batch->qty_remaining, $actualBalance);
+                    if ($availableInBatch <= 0.00001) {
+                        continue;
+                    }
+
                     $qtyToDeduct = min($remainingNeeded, $availableInBatch);
-                    $newRemaining = $availableInBatch - $qtyToDeduct;
+                    $newRemaining = (float) $batch->qty_remaining - $qtyToDeduct;
 
                     $batch->update([
                         'qty_remaining' => $newRemaining,

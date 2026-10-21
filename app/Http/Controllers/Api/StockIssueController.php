@@ -28,7 +28,13 @@ class StockIssueController extends Controller
         }
 
         if ($request->filled('status')) {
-            $query->where('status', $request->status);
+            $statusVal = match (strtolower(trim($request->status))) {
+                'belum kembali', 'open' => 'open',
+                'sebagian kembali', 'partially_returned' => 'partially_returned',
+                'sudah kembali', 'fully_returned' => 'fully_returned',
+                default => $request->status,
+            };
+            $query->where('status', $statusVal);
         }
 
         if ($request->filled('search')) {

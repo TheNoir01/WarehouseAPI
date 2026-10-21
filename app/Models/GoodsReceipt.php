@@ -28,6 +28,11 @@ class GoodsReceipt extends Model
         'purchasing_locked_at',
         'purchasing_unlocked_at',
         'purchasing_unlocked_by',
+        'karyawan_edit_count',
+        'is_karyawan_locked',
+        'karyawan_locked_at',
+        'karyawan_unlocked_at',
+        'karyawan_unlocked_by',
     ];
 
     protected function casts(): array
@@ -38,6 +43,10 @@ class GoodsReceipt extends Model
             'purchasing_edit_count' => 'integer',
             'purchasing_locked_at' => 'datetime',
             'purchasing_unlocked_at' => 'datetime',
+            'is_karyawan_locked' => 'boolean',
+            'karyawan_edit_count' => 'integer',
+            'karyawan_locked_at' => 'datetime',
+            'karyawan_unlocked_at' => 'datetime',
         ];
     }
 
@@ -64,6 +73,11 @@ class GoodsReceipt extends Model
     public function purchasingUnlockedBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'purchasing_unlocked_by');
+    }
+
+    public function karyawanUnlockedBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'karyawan_unlocked_by');
     }
 
     public function items(): HasMany

@@ -83,6 +83,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/goods-receipts/{goodsReceipt}/unlock-purchasing', [GoodsReceiptController::class, 'unlockPurchasing']);
     });
 
+    Route::middleware('role:kepala_gudang,admin,maintenance')->group(function () {
+        Route::post('/goods-receipts/{goodsReceipt}/unlock-karyawan', [GoodsReceiptController::class, 'unlockKaryawan']);
+    });
+
+    Route::middleware('role:karyawan,kepala_gudang,admin,maintenance')->group(function () {
+        Route::put('/goods-receipts/{goodsReceipt}', [GoodsReceiptController::class, 'update']);
+    });
+
     // Operational, Transactions, and Master Management (Karyawan, Kepala Gudang, and Maintenance)
     Route::middleware('role:karyawan,kepala_gudang,maintenance')->group(function () {
         // Transactions: Stock Issue & Returns

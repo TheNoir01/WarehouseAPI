@@ -20,7 +20,8 @@ class ItemController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = Item::with(['company', 'category', 'type', 'unit', 'stockBalances']);
+        $query = Item::with(['company', 'category', 'type', 'unit', 'stockBalances.location'])
+            ->orderByRaw("SUBSTRING(COALESCE(item_code, ''), 1, 3) ASC, LENGTH(COALESCE(item_code, '')) ASC, item_code ASC, id ASC");
 
         if ($request->filled('company_id')) {
             $query->where('company_id', $request->company_id);
@@ -36,9 +37,6 @@ class ItemController extends Controller
 
         if ($request->filled('search')) {
             $query->fuzzySearch($request->search);
-            $query->orderBy('item_code', 'ASC')->orderBy('id', 'ASC');
-        } else {
-            $query->orderByRaw("SUBSTRING(COALESCE(item_code, ''), 1, 3) ASC, LENGTH(COALESCE(item_code, '')) ASC, item_code ASC, id ASC");
         }
 
         if ($request->boolean('all') || $request->per_page === 'all' || (int)$request->per_page === -1) {
@@ -155,97 +153,13 @@ class ItemController extends Controller
             'stockMovements.user',
             'parentItem',
             'materialRemnants',
-            'priceHistories.user',
         ]);
 
         return $this->successResponse($item, 'Detail barang berhasil diambil.');
     }
 
-    public function updatePurchasing(Request $request, Item $item): JsonResponse
-    {
-        $user = $request->user();
-        $roleName = is_string($user?->role) ? $user->role : ($user?->role?->name ?? '');
-
-        if ($roleName !== 'purchasing') {
-            return $this->errorResponse('Akses ditolak: Hanya role Purchasing yang berhak menginput atau mengubah harga barang dan No PO.', 403);
-        }
-
-        $request->validate([
-            'purchase_price' => 'nullable|numeric|min:0',
-            'po_number' => 'nullable|string|max:100',
-            'notes' => 'nullable|string|max:255',
-        ]);
-
-        $oldPrice = (float) ($item->purchase_price ?? 0);
-        $newPrice = $request->has('purchase_price') ? max(0, (float) $request->input('purchase_price', 0)) : $oldPrice;
-        $oldPo = $item->po_number;
-        $newPo = $request->has('po_number') ? trim((string) $request->input('po_number', '')) : $oldPo;
-        $notes = trim($request->input('notes', ''));
-
-        // Update item price & po_number (Note: FIFO queue, batch dates, and received_date are strictly untouched)
-        $item->update([
-            'purchase_price' => $newPrice,
-            'po_number' => $newPo ?: null,
-        ]);
-
-        // Sync unit_price on existing inventory batches for this item if price specified
-        if ($newPrice > 0) {
-            \App\Models\InventoryBatch::where('item_id', $item->id)
-                ->where('unit_price', '<=', 0)
-                ->update(['unit_price' => $newPrice]);
-        }
-
-        // Record history log in item_price_histories
-        $historyNote = $notes ?: ($newPo !== $oldPo ? "Update PO: {$newPo}" : 'Pembaruan data oleh Purchasing');
-        \App\Models\ItemPriceHistory::create([
-            'item_id' => $item->id,
-            'user_id' => $request->user()?->id,
-            'old_price' => $oldPrice,
-            'new_price' => $newPrice,
-            'notes' => $historyNote,
-        ]);
-
-        AuditLog::record('ITEM_PURCHASING_UPDATE', Item::class, $item->id, [
-            'purchase_price' => $oldPrice,
-            'po_number' => $oldPo,
-        ], [
-            'purchase_price' => $newPrice,
-            'po_number' => $newPo,
-            'notes' => $notes,
-        ], $request->user()?->id);
-
-        return $this->successResponse($item->fresh(['company', 'category', 'type', 'unit', 'priceHistories.user']), 'Data purchasing barang (Harga & No. PO) berhasil diperbarui tanpa menggeser antrean FIFO.');
-    }
-
-    public function priceHistories(Request $request): JsonResponse
-    {
-        $query = \App\Models\ItemPriceHistory::with(['item.company', 'item.unit', 'user'])
-            ->orderByDesc('created_at');
-
-        if ($request->filled('item_id')) {
-            $query->where('item_id', $request->item_id);
-        }
-
-        $perPage = (int) ($request->per_page ?: 25);
-        $histories = $query->paginate($perPage);
-
-        return $this->successResponse($histories->items(), 'Riwayat perubahan harga berhasil diambil.', 200, [
-            'current_page' => $histories->currentPage(),
-            'per_page' => $histories->perPage(),
-            'total' => $histories->total(),
-            'last_page' => $histories->lastPage(),
-        ]);
-    }
-
     public function update(Request $request, Item $item): JsonResponse
     {
-        $user = $request->user();
-        $roleName = is_string($user?->role) ? $user->role : ($user?->role?->name ?? '');
-
-        if ($roleName === 'purchasing') {
-            return $this->errorResponse('Akses ditolak: Role Purchasing tidak memiliki izin mengubah data master barang.', 403);
-        }
-
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'category_id' => 'nullable|exists:categories,id',
@@ -262,7 +176,7 @@ class ItemController extends Controller
         $item->update($validated);
         AuditLog::record('UPDATE_ITEM', Item::class, $item->id, $old, $item->toArray(), $request->user()?->id);
 
-        return $this->successResponse($item->fresh(['company', 'category', 'type', 'unit']), 'Data barang berhasil diperbarui.');
+        return $this->successResponse($item->fresh(['company', 'category', 'type', 'unit']), 'Barang berhasil diperbarui.');
     }
 
     public function destroy(Item $item, Request $request): JsonResponse
