@@ -151,11 +151,53 @@ class ItemController extends Controller
             'unit',
             'stockBalances.location.warehouse',
             'stockMovements.user',
+            'priceHistories.user',
             'parentItem',
             'materialRemnants',
         ]);
 
         return $this->successResponse($item, 'Detail barang berhasil diambil.');
+    }
+
+    public function updatePurchasing(Request $request, Item $item): JsonResponse
+    {
+        $validated = $request->validate([
+            'purchase_price' => 'required|numeric|min:0',
+            'po_number' => 'nullable|string|max:100',
+            'notes' => 'nullable|string|max:255',
+        ]);
+
+        $oldPrice = (float) ($item->purchase_price ?? 0);
+        $newPrice = (float) $validated['purchase_price'];
+
+        $item->update([
+            'purchase_price' => $newPrice,
+            'po_number' => $validated['po_number'] ?? $item->po_number,
+        ]);
+
+        if (abs($oldPrice - $newPrice) > 0.001) {
+            \App\Models\ItemPriceHistory::create([
+                'item_id' => $item->id,
+                'user_id' => $request->user()?->id ?? 1,
+                'old_price' => $oldPrice,
+                'new_price' => $newPrice,
+                'notes' => $validated['notes'] ?? 'Update manual harga barang oleh Purchasing',
+            ]);
+        }
+
+        return $this->successResponse(
+            $item->fresh(['company', 'category', 'type', 'unit', 'priceHistories.user']),
+            'Harga barang berhasil diperbarui.'
+        );
+    }
+
+    public function priceHistories(Request $request): JsonResponse
+    {
+        $query = \App\Models\ItemPriceHistory::with(['item', 'user'])->orderByDesc('created_at');
+        if ($request->filled('item_id')) {
+            $query->where('item_id', $request->item_id);
+        }
+        return $this->successResponse($query->paginate(20), 'Riwayat harga berhasil diambil.');
     }
 
     public function update(Request $request, Item $item): JsonResponse

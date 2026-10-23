@@ -23,8 +23,10 @@ class StockController extends Controller
             'company',
             'unit',
             'category',
+            'priceHistories',
             'stockBalances.location.warehouse',
             'goodsReceiptItems.goodsReceipt:id,receipt_number,received_date,supplier_name,po_number,status',
+            'stockIssueItems.stockIssue:id,issue_number,issued_date,status',
         ]);
 
         if ($request->filled('company_id')) {
@@ -68,11 +70,43 @@ class StockController extends Controller
                             'receipt_number' => $gr->receipt_number,
                             'received_date' => $rawDate,
                             'qty' => (float) $gri->qty,
+                            'unit_price' => (float) ($gri->unit_price ?? 0),
                             'supplier_name' => $gr->supplier_name,
                             'po_number' => $gr->po_number,
                             'notes' => $gri->notes,
                         ];
                     }
+                }
+            }
+
+            $issues = [];
+            if ($item->relationLoaded('stockIssueItems')) {
+                foreach ($item->stockIssueItems as $sii) {
+                    $si = $sii->stockIssue;
+                    if ($si) {
+                        $rawDate = $si->issued_date ? (is_string($si->issued_date) ? substr($si->issued_date, 0, 10) : $si->issued_date->format('Y-m-d')) : null;
+                        $issues[] = [
+                            'id' => $sii->id,
+                            'issue_number' => $si->issue_number,
+                            'issued_date' => $rawDate,
+                            'qty' => (float) $sii->qty_issued,
+                            'notes' => $sii->notes,
+                        ];
+                    }
+                }
+            }
+
+            $prices = [];
+            if ($item->relationLoaded('priceHistories')) {
+                foreach ($item->priceHistories as $ph) {
+                    $prices[] = [
+                        'id' => $ph->id,
+                        'old_price' => (float) $ph->old_price,
+                        'new_price' => (float) $ph->new_price,
+                        'price' => (float) $ph->new_price,
+                        'notes' => $ph->notes,
+                        'created_at' => $ph->created_at?->format('Y-m-d H:i:s'),
+                    ];
                 }
             }
 
@@ -89,6 +123,8 @@ class StockController extends Controller
                 'company' => $item->company,
                 'item' => $item,
                 'goods_receipts' => $receipts,
+                'goods_issues' => $issues,
+                'price_histories' => $prices,
                 'location' => $firstBalance?->location ?? [
                     'id' => 1,
                     'code' => '-',

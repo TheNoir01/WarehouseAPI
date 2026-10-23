@@ -28,13 +28,7 @@ class StockIssueController extends Controller
         }
 
         if ($request->filled('status')) {
-            $statusVal = match (strtolower(trim($request->status))) {
-                'belum kembali', 'open' => 'open',
-                'sebagian kembali', 'partially_returned' => 'partially_returned',
-                'sudah kembali', 'fully_returned' => 'fully_returned',
-                default => $request->status,
-            };
-            $query->where('status', $statusVal);
+            $query->where('status', $request->status);
         }
 
         if ($request->filled('search')) {
@@ -110,5 +104,27 @@ class StockIssueController extends Controller
         ]);
 
         return $this->successResponse($stockIssue, 'Detail pengeluaran barang berhasil diambil.');
+    }
+
+    public function exportData(Request $request): JsonResponse
+    {
+        $query = StockIssue::with([
+            'company',
+            'issuedBy',
+            'items.item.unit',
+            'items.location',
+        ])->orderBy('issued_date', 'asc')->orderBy('id', 'asc');
+
+        if ($request->filled('company_id')) {
+            $query->where('company_id', $request->company_id);
+        }
+
+        if ($request->filled('start_date') && $request->filled('end_date')) {
+            $query->whereBetween('issued_date', [$request->start_date, $request->end_date]);
+        }
+
+        $issues = $query->get();
+
+        return $this->successResponse($issues, 'Data ekspor pengeluaran barang berhasil diambil.');
     }
 }

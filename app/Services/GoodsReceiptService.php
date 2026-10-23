@@ -303,14 +303,24 @@ class GoodsReceiptService
                     }
 
                     if ($receiptItem) {
-                        $oldUnitPrice = (float) $receiptItem->unit_price;
+                        $currentReceiptUnitPrice = (float) $receiptItem->unit_price;
                         $oldTotalPrice = (float) $receiptItem->total_price;
                         $unitPrice = isset($itemData['unit_price']) ? max(0, (float) $itemData['unit_price']) : (float) $receiptItem->unit_price;
                         $totalPrice = isset($itemData['total_price']) ? (float) $itemData['total_price'] : round($unitPrice * (float) $receiptItem->qty, 2);
 
-                        if (abs($oldUnitPrice - $unitPrice) > 0.001 || abs($oldTotalPrice - $totalPrice) > 0.001) {
-                            $itemName = $receiptItem->item?->name ?? "Item #{$receiptItem->item_id}";
-                            $itemCode = $receiptItem->item?->item_code ?? '';
+                        // Ambil data master item terkait
+                        $masterItem = $receiptItem->item ?? \App\Models\Item::find($receiptItem->item_id);
+
+                        // Tentukan harga sebelumnya:
+                        // Jika di dokumen penerimaan ini unit_price masih 0, ambil dari harga terakhir master item
+                        $oldUnitPrice = $currentReceiptUnitPrice;
+                        if ($oldUnitPrice <= 0 && $masterItem && (float) $masterItem->purchase_price > 0) {
+                            $oldUnitPrice = (float) $masterItem->purchase_price;
+                        }
+
+                        if (abs($oldUnitPrice - $unitPrice) > 0.001 || abs($oldTotalPrice - $totalPrice) > 0.001 || ($currentReceiptUnitPrice <= 0 && $unitPrice > 0)) {
+                            $itemName = $masterItem?->name ?? "Item #{$receiptItem->item_id}";
+                            $itemCode = $masterItem?->item_code ?? '';
                             $priceChangesOld[] = [
                                 'item_id' => $receiptItem->item_id,
                                 'item_code' => $itemCode,
@@ -326,7 +336,7 @@ class GoodsReceiptService
                                 'total_price' => $totalPrice,
                             ];
 
-                            // Also record into ItemPriceHistory for persistent tracking
+                            // Catat ke ItemPriceHistory untuk audit log histori harga barang
                             \App\Models\ItemPriceHistory::create([
                                 'item_id' => $receiptItem->item_id,
                                 'user_id' => $userId,
@@ -340,6 +350,14 @@ class GoodsReceiptService
                             'unit_price' => $unitPrice,
                             'total_price' => $totalPrice,
                         ]);
+
+                        // Perbarui harga beli dan No. PO pada Master Barang (Item)
+                        if ($masterItem && $unitPrice > 0) {
+                            $masterItem->update([
+                                'purchase_price' => $unitPrice,
+                                'po_number' => $newPo ?: $masterItem->po_number,
+                            ]);
+                        }
 
                         // Update unit_price on corresponding inventory batches, preserving received_at!
                         \App\Models\InventoryBatch::where('source_type', GoodsReceipt::class)

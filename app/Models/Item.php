@@ -21,6 +21,8 @@ class Item extends Model
         'barcode',
         'qr_code',
         'minimum_stock',
+        'purchase_price',
+        'po_number',
         'is_remnant',
         'parent_item_id',
         'specification',
@@ -37,6 +39,7 @@ class Item extends Model
     {
         return [
             'minimum_stock' => 'decimal:2',
+            'purchase_price' => 'decimal:2',
             'is_remnant' => 'boolean',
         ];
     }
@@ -94,6 +97,11 @@ class Item extends Model
     public function goodsReceiptItems(): HasMany
     {
         return $this->hasMany(GoodsReceiptItem::class);
+    }
+
+    public function stockIssueItems(): HasMany
+    {
+        return $this->hasMany(StockIssueItem::class);
     }
 
     public function priceHistories(): HasMany

@@ -30,11 +30,21 @@ class UserController extends Controller
     public function store(Request $request): JsonResponse
     {
         $requester = $request->user();
-        $isRequesterMaintenance = ($requester?->role?->name === 'maintenance');
+        $requesterRole = $requester?->role?->name;
+        $isRequesterMaintenance = ($requesterRole === 'maintenance');
         $maintenanceRole = Role::where('name', 'maintenance')->first();
 
+        // 1. Role Maintenance hanya dapat dibuat oleh akun Maintenance
         if (!$isRequesterMaintenance && (int) $request->role_id === (int) ($maintenanceRole?->id)) {
             return $this->errorResponse('Akses ditolak: Hanya akun Maintenance yang dapat membuat pengguna dengan hak akses Maintenance.', 403);
+        }
+
+        // 2. Role Kepala Gudang hanya dapat membuat akun Karyawan Operasional Gudang
+        if ($requesterRole === 'kepala_gudang') {
+            $karyawanRole = Role::where('name', 'karyawan')->first();
+            if ((int) $request->role_id !== (int) ($karyawanRole?->id)) {
+                return $this->errorResponse('Akses ditolak: Kepala Gudang hanya dapat membuat pengguna dengan hak akses Karyawan Operasional Gudang.', 403);
+            }
         }
 
         $validated = $request->validate([
@@ -62,16 +72,32 @@ class UserController extends Controller
     public function update(Request $request, User $user): JsonResponse
     {
         $requester = $request->user();
-        $isRequesterMaintenance = ($requester?->role?->name === 'maintenance');
-        $targetIsMaintenance = ($user->role?->name === 'maintenance');
+        $requesterRole = $requester?->role?->name;
+        $targetRole = $user->role?->name;
         $maintenanceRole = Role::where('name', 'maintenance')->first();
 
-        if (!$isRequesterMaintenance && $targetIsMaintenance) {
+        // 1. Akun Maintenance tidak bisa diubah oleh siapapun selain Maintenance
+        if ($requesterRole !== 'maintenance' && $targetRole === 'maintenance') {
             return $this->errorResponse('Akses ditolak: Anda tidak diizinkan mengubah akun pengguna dengan hak akses Maintenance.', 403);
         }
 
-        if (!$isRequesterMaintenance && (int) $request->role_id === (int) ($maintenanceRole?->id)) {
+        // 2. Hak akses Maintenance tidak bisa diberikan oleh selain Maintenance
+        if ($requesterRole !== 'maintenance' && (int) $request->role_id === (int) ($maintenanceRole?->id)) {
             return $this->errorResponse('Akses ditolak: Anda tidak dapat memberikan hak akses Maintenance.', 403);
+        }
+
+        // 3. Kepala Gudang hanya bisa edit akun role sendiri dan karyawan
+        if ($requesterRole === 'kepala_gudang') {
+            $canEdit = ($user->id === $requester->id) || in_array($targetRole, ['karyawan', 'kepala_gudang']);
+            if (!$canEdit) {
+                return $this->errorResponse('Akses ditolak: Kepala Gudang hanya dapat mengubah akun dengan role Kepala Gudang atau Karyawan.', 403);
+            }
+
+            // Kepala Gudang hanya dapat memilih role Kepala Gudang atau Karyawan
+            $allowedRoleIds = Role::whereIn('name', ['karyawan', 'kepala_gudang'])->pluck('id')->toArray();
+            if (!in_array((int) $request->role_id, $allowedRoleIds, true)) {
+                return $this->errorResponse('Akses ditolak: Kepala Gudang hanya dapat menetapkan role Kepala Gudang atau Karyawan Operasional Gudang.', 403);
+            }
         }
 
         $validated = $request->validate([
@@ -102,5 +128,44 @@ class UserController extends Controller
         AuditLog::record('UPDATE_USER', User::class, $user->id, $old, $user->toArray());
 
         return $this->successResponse($user->fresh(['role', 'company']), 'Data pengguna berhasil diperbarui.');
+    }
+
+    public function destroy(Request $request, User $user): JsonResponse
+    {
+        $requester = $request->user();
+        $requesterRole = $requester?->role?->name;
+        $targetRole = $user->role?->name;
+
+        // Tidak dapat menghapus akun sendiri
+        if ((int) $requester->id === (int) $user->id) {
+            return $this->errorResponse('Akses ditolak: Anda tidak dapat menghapus akun Anda sendiri.', 400);
+        }
+
+        // 1. Akun Maintenance hanya bisa dihapus oleh akun Maintenance
+        if ($targetRole === 'maintenance' && $requesterRole !== 'maintenance') {
+            return $this->errorResponse('Akses ditolak: Akun Maintenance (MT) tidak dapat dihapus oleh pengguna lain.', 403);
+        }
+
+        // 2. Kepala Gudang hanya dapat menghapus akun role Karyawan Operasional Gudang
+        if ($requesterRole === 'kepala_gudang') {
+            if ($targetRole !== 'karyawan') {
+                return $this->errorResponse('Akses ditolak: Kepala Gudang hanya dapat menghapus akun dengan role Karyawan Operasional Gudang.', 403);
+            }
+        }
+
+        // 3. Admin dapat menghapus akun semua role kecuali Maintenance
+        if ($requesterRole === 'admin') {
+            if ($targetRole === 'maintenance') {
+                return $this->errorResponse('Akses ditolak: Admin tidak dapat menghapus akun Maintenance (MT).', 403);
+            }
+        }
+
+        $old = $user->toArray();
+        $userName = $user->name;
+        $user->delete();
+
+        AuditLog::record('DELETE_USER', User::class, $user->id, $old, null, $requester->id);
+
+        return $this->successResponse(null, "Akun pengguna [{$userName}] berhasil dihapus dari sistem.");
     }
 }

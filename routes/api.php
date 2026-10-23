@@ -63,6 +63,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/goods-receipts/export-data', [GoodsReceiptController::class, 'exportData']);
     Route::get('/goods-receipts', [GoodsReceiptController::class, 'index']);
     Route::get('/goods-receipts/{goodsReceipt}', [GoodsReceiptController::class, 'show']);
+    Route::get('/goods-issues/export-data', [StockIssueController::class, 'exportData']);
     Route::get('/goods-issues', [StockIssueController::class, 'index']);
     Route::get('/goods-issues/{stockIssue}', [StockIssueController::class, 'show']);
     Route::get('/returns', [StockReturnController::class, 'index']);
@@ -140,6 +141,7 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::get('/users', [UserController::class, 'index']);
         Route::post('/users', [UserController::class, 'store']);
         Route::put('/users/{user}', [UserController::class, 'update']);
+        Route::delete('/users/{user}', [UserController::class, 'destroy']);
         Route::get('/roles', [UserController::class, 'roles']);
     });
 });
